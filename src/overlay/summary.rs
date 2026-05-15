@@ -22,7 +22,7 @@ enum TaskSource {
 
 #[derive(Debug, Clone, Default)]
 pub(super) struct DeviceSummary {
-    id: Option<String>,
+    id: String,
     name: String,
     online: bool,
     task_name: Option<String>,
@@ -51,7 +51,7 @@ pub(super) struct DeviceSummary {
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(super) struct OverlayDevice {
-    id: Option<String>,
+    id: String,
     name: String,
     online: bool,
     is_printing: bool,
@@ -155,7 +155,7 @@ impl<'a> DeviceFields<'a> {
         self.print_string(|print| print.task_id.as_ref())
     }
 
-    fn device_id(&self) -> Option<String> {
+    fn device_id(&self) -> String {
         self.device.id.clone()
     }
 
@@ -218,7 +218,7 @@ impl<'a> DeviceFields<'a> {
             progress,
         );
         let thumbnail = thumbnail_path(
-            device_id.as_deref(),
+            &device_id,
             has_print_status_task,
             task_id.as_deref(),
             filename.as_deref(),
@@ -261,12 +261,12 @@ impl<'a> DeviceFields<'a> {
     }
 }
 
-pub(super) fn summarize_devices(
-    devices: &[KnownDevice],
+pub(super) fn summarize_devices<'a>(
+    devices: impl IntoIterator<Item = &'a KnownDevice>,
     reports: &HashMap<String, PrinterStatus>,
 ) -> Vec<DeviceSummary> {
     devices
-        .iter()
+        .into_iter()
         .map(|device| summarize_device(device, reports))
         .collect()
 }
@@ -275,13 +275,13 @@ fn summarize_device(
     device: &KnownDevice,
     reports: &HashMap<String, PrinterStatus>,
 ) -> DeviceSummary {
-    let report = device.id.as_ref().and_then(|id| reports.get(id));
+    let report = reports.get(&device.id);
     let fields = DeviceFields::new(device, report);
     fields.summary()
 }
 
 fn thumbnail_path(
-    device_id: Option<&str>,
+    device_id: &str,
     has_print_status_task: bool,
     task_id: Option<&str>,
     filename: Option<&str>,
@@ -291,7 +291,6 @@ fn thumbnail_path(
     if !has_print_status_task {
         return None;
     }
-    let device_id = device_id?;
     let mut path = format!("/api/thumbnail?device={}", encode_query_value(device_id));
     if let Some(task) = task_id
         .or(filename)
@@ -478,7 +477,7 @@ mod tests {
     }
 
     fn device(value: Value) -> KnownDevice {
-        KnownDevice::from_cloud(decode::<CloudDevice>(value))
+        KnownDevice::from_cloud(decode::<CloudDevice>(value)).expect("device should have an ID")
     }
 
     #[test]

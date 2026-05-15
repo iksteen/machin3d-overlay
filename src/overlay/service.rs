@@ -3,7 +3,7 @@ use chrono::Utc;
 use serde::Serialize;
 
 use crate::{
-    devices::KnownDevice,
+    devices::DeviceRegistry,
     mqtt::{MqttRuntime, MqttStatusPayload},
 };
 
@@ -11,7 +11,7 @@ use super::summary::{overlay_device, summarize_devices, OverlayDevice};
 
 #[derive(Clone)]
 pub struct SnapshotService {
-    devices: Vec<KnownDevice>,
+    registry: DeviceRegistry,
     mqtt: MqttRuntime,
 }
 
@@ -35,14 +35,14 @@ pub struct ErrorPayload {
 }
 
 impl SnapshotService {
-    pub(crate) fn new(devices: Vec<KnownDevice>, mqtt: MqttRuntime) -> Self {
-        Self { devices, mqtt }
+    pub(crate) fn new(registry: DeviceRegistry, mqtt: MqttRuntime) -> Self {
+        Self { registry, mqtt }
     }
 
     pub async fn payload(&self) -> Result<OverlayPayload> {
         let reports = self.mqtt.reports().await;
         let status = self.mqtt.status().await;
-        let devices = summarize_devices(&self.devices, &reports)
+        let devices = summarize_devices(self.registry.devices(), &reports)
             .into_iter()
             .map(overlay_device)
             .collect();

@@ -3,7 +3,7 @@ use tracing::info;
 
 use crate::{
     cloud::{cloud_mqtt_startup, CloudSession},
-    devices::{resolve_devices, DeviceSource, ResolvedDevices},
+    devices::{resolve_devices, DeviceRegistry, DeviceSource},
     local::{LocalDevice, LocalEndpointArg, MqttEndpoint},
     mqtt::{monitor_target, MqttTarget},
 };
@@ -61,42 +61,26 @@ pub(crate) async fn monitor_mqtt(cloud: Option<CloudSession>, config: MonitorCon
 }
 
 fn select_monitor_target(
-    devices: &ResolvedDevices,
+    registry: &DeviceRegistry,
     requested_device_id: Option<&str>,
 ) -> Result<MonitorTarget> {
     let requested_device_id = requested_device_id
         .map(str::trim)
         .filter(|device_id| !device_id.is_empty());
-    let device = match requested_device_id {
-        Some(device_id) => devices
-            .catalog
-            .iter()
-            .find(|device| device.id.as_deref() == Some(device_id))
+    let entry = match requested_device_id {
+        Some(device_id) => registry
+            .get(device_id)
             .with_context(|| format!("device `{device_id}` is not known"))?,
-        None => devices
-            .catalog
-            .first()
-            .context("no devices are configured")?,
+        None => registry.first().context("no devices are configured")?,
     };
-    let device_id = device
-        .id
-        .as_deref()
-        .filter(|device_id| !device_id.trim().is_empty())
-        .context("selected device does not have a device ID")?;
+    let device = entry.device();
+    let device_id = entry.id();
 
     match device.source {
         DeviceSource::Cloud => Ok(MonitorTarget::Cloud(device_id.to_owned())),
-        DeviceSource::Local => {
-            let local = devices
-                .local
-                .iter()
-                .find(|device| device.id == device_id)
-                .cloned()
-                .with_context(|| {
-                    format!("selected local device `{device_id}` is missing LAN MQTT config")
-                })?;
-            Ok(MonitorTarget::Local(local))
-        }
+        DeviceSource::Local => Ok(MonitorTarget::Local(entry.local().cloned().with_context(
+            || format!("selected local device `{device_id}` is missing LAN MQTT config"),
+        )?)),
     }
 }
 
@@ -104,19 +88,16 @@ fn select_monitor_target(
 mod tests {
     use super::{select_monitor_target, MonitorTarget};
     use crate::{
-        bambu::PrinterStatus,
-        devices::{DeviceSource, KnownDevice, ResolvedDevices},
+        bambu::CloudDevice,
+        devices::DeviceRegistry,
         local::{LocalDevice, LocalEndpoint},
     };
 
-    fn cloud_device(id: &str) -> KnownDevice {
-        KnownDevice {
+    fn cloud_device(id: &str) -> CloudDevice {
+        CloudDevice {
             id: Some(id.to_owned()),
-            name: None,
             online: Some(true),
-            access_code: None,
-            status: PrinterStatus::default(),
-            source: DeviceSource::Cloud,
+            ..CloudDevice::default()
         }
     }
 
@@ -127,14 +108,9 @@ mod tests {
         }
     }
 
-    fn resolved() -> ResolvedDevices {
+    fn resolved() -> DeviceRegistry {
         let local = local_device("printer-b");
-        ResolvedDevices {
-            catalog: vec![cloud_device("printer-a"), KnownDevice::from_local(&local)],
-            local: vec![local],
-            cloud_mqtt_ids: vec!["printer-a".to_owned()],
-            explicit_video: Vec::new(),
-        }
+        DeviceRegistry::new(vec![cloud_device("printer-a")], vec![local])
     }
 
     #[test]

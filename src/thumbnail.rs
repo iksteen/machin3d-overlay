@@ -17,7 +17,7 @@ use crate::{
     bambu::{PrinterStatus, Task},
     cloud::CloudSession,
     device_tls,
-    devices::{DeviceSource, KnownDevice},
+    devices::{DeviceRegistry, DeviceSource},
     local::LocalDevice,
     mqtt::MqttRuntime,
 };
@@ -40,8 +40,7 @@ pub(crate) struct ThumbnailRuntime {
 struct ThumbnailInner {
     mqtt: MqttRuntime,
     cloud: Option<CloudSession>,
-    devices: Vec<KnownDevice>,
-    local_devices: HashMap<String, LocalDevice>,
+    registry: DeviceRegistry,
     cache: RwLock<HashMap<String, ThumbnailEntry>>,
     fetch_locks: Mutex<HashMap<String, Arc<Mutex<()>>>>,
 }
@@ -73,19 +72,13 @@ impl ThumbnailRuntime {
     pub(crate) fn new(
         mqtt: MqttRuntime,
         cloud: Option<CloudSession>,
-        devices: Vec<KnownDevice>,
-        local_devices: Vec<LocalDevice>,
+        registry: DeviceRegistry,
     ) -> Self {
-        let local_devices = local_devices
-            .into_iter()
-            .map(|device| (device.id.clone(), device))
-            .collect();
         Self {
             inner: Arc::new(ThumbnailInner {
                 mqtt,
                 cloud,
-                devices,
-                local_devices,
+                registry,
                 cache: RwLock::new(HashMap::new()),
                 fetch_locks: Mutex::new(HashMap::new()),
             }),
@@ -124,10 +117,8 @@ impl ThumbnailRuntime {
 
     async fn refresh_changed_devices(&self) {
         let reports = self.inner.mqtt.reports().await;
-        for device in &self.inner.devices {
-            let Some(device_id) = device.id.as_deref() else {
-                continue;
-            };
+        for device in self.inner.registry.devices() {
+            let device_id = device.id.as_str();
             let Some(report) = reports.get(device_id) else {
                 self.clear_device(device_id).await;
                 continue;
@@ -224,9 +215,9 @@ impl ThumbnailRuntime {
     ) -> Result<ThumbnailImage> {
         let device = self
             .inner
-            .devices
-            .iter()
-            .find(|device| device.id.as_deref() == Some(device_id))
+            .registry
+            .get(device_id)
+            .map(|entry| entry.device())
             .with_context(|| format!("device `{device_id}` is not known"))?;
 
         match device.source {
@@ -283,8 +274,9 @@ impl ThumbnailRuntime {
     ) -> Result<ThumbnailImage> {
         let local = self
             .inner
-            .local_devices
+            .registry
             .get(device_id)
+            .and_then(|entry| entry.local())
             .with_context(|| format!("device `{device_id}` does not have a local endpoint"))?;
         let filename = report
             .filename
@@ -305,10 +297,7 @@ impl ThumbnailRuntime {
             .filter(|device_id| !device_id.is_empty());
         if let Some(device_id) = requested_device_id {
             ensure!(
-                self.inner
-                    .devices
-                    .iter()
-                    .any(|device| device.id.as_deref() == Some(device_id)),
+                self.inner.registry.get(device_id).is_some(),
                 "device `{device_id}` is not known"
             );
             return Ok(Some(device_id.to_owned()));
@@ -316,9 +305,9 @@ impl ThumbnailRuntime {
 
         Ok(self
             .inner
-            .devices
-            .iter()
-            .find_map(|device| device.id.clone()))
+            .registry
+            .first()
+            .map(|entry| entry.id().to_owned()))
     }
 
     async fn cached_image(&self, device_id: &str) -> Option<ThumbnailImage> {

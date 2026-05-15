@@ -24,7 +24,7 @@ use crate::{
     bambu::{MQTT_HOST, MQTT_PORT},
     cloud::{cloud_mqtt_startup, start_cloud_mqtt},
     devices::{
-        resolve_devices, resolve_video_endpoints, DeviceSource, KnownDevice, ResolvedDevices,
+        resolve_devices, resolve_video_endpoints, DeviceRegistry, DeviceSource, KnownDevice,
         ResolvedVideoEndpoints,
     },
     local::{Endpoint, LocalEndpointArg, MqttEndpoint},
@@ -77,7 +77,7 @@ struct DeviceQuery {
 
 #[derive(Clone)]
 struct KnownDevices {
-    devices: Vec<KnownDevice>,
+    registry: DeviceRegistry,
 }
 
 #[derive(Debug, Serialize)]
@@ -89,7 +89,7 @@ struct KnownDevicesPayload {
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct KnownDevicePayload {
-    id: Option<String>,
+    id: String,
     name: Option<String>,
     online: Option<bool>,
     source: DeviceSource,
@@ -99,36 +99,32 @@ struct KnownDevicePayload {
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct KnownDevicePaths {
-    horizontal: Option<String>,
-    vertical: Option<String>,
-    thumbnail: Option<String>,
+    horizontal: String,
+    vertical: String,
+    thumbnail: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     video: Option<String>,
 }
 
 pub async fn serve(cloud: Option<CloudSession>, config: ServerConfig) -> Result<()> {
     let mqtt = MqttRuntime::new();
-    let devices = resolve_devices(
+    let registry = resolve_devices(
         cloud.as_ref(),
         &config.cloud_devices,
         &config.local_devices,
         &config.video_endpoints,
     )
     .await?;
-    let cloud_mqtt =
-        cloud_mqtt_startup(cloud.as_ref(), &config.cloud_mqtt, &devices.cloud_mqtt_ids)?;
-    let video = resolve_video_endpoints(&devices).await?;
-    let thumbnail = ThumbnailRuntime::new(
-        mqtt.clone(),
-        cloud.clone(),
-        devices.catalog.clone(),
-        devices.local.clone(),
-    );
+    let cloud_mqtt_ids = registry.cloud_mqtt_ids();
+    let cloud_mqtt = cloud_mqtt_startup(cloud.as_ref(), &config.cloud_mqtt, &cloud_mqtt_ids)?;
+    let video = resolve_video_endpoints(&registry).await?;
+    let thumbnail = ThumbnailRuntime::new(mqtt.clone(), cloud.clone(), registry.clone());
     thumbnail.start();
-    let state = app_state(mqtt.clone(), &devices, video, thumbnail)?;
+    let local_devices = registry.local_devices();
+    let state = app_state(mqtt.clone(), registry, video, thumbnail)?;
 
     start_cloud_mqtt(mqtt.clone(), cloud_mqtt);
-    start_local_supervisors(mqtt, devices.local);
+    start_local_supervisors(mqtt, local_devices);
     serve_http(config.bind, state).await
 }
 
@@ -160,16 +156,16 @@ async fn serve_http(bind: Endpoint, state: AppState) -> Result<()> {
 
 fn app_state(
     mqtt: MqttRuntime,
-    devices: &ResolvedDevices,
+    registry: DeviceRegistry,
     video_endpoints: ResolvedVideoEndpoints,
     thumbnail: ThumbnailRuntime,
 ) -> Result<AppState> {
     let known_devices = KnownDevices {
-        devices: devices.catalog.clone(),
+        registry: registry.clone(),
     };
-    let snapshot = SnapshotService::new(devices.catalog.clone(), mqtt.clone());
+    let snapshot = SnapshotService::new(registry.clone(), mqtt.clone());
     let video = VideoRuntime::new(
-        devices.catalog.clone(),
+        registry,
         video_endpoints.endpoints,
         video_endpoints.endpoint_map,
     )?;
@@ -187,8 +183,8 @@ impl KnownDevices {
     fn payload(&self, runtime_video_ids: &HashSet<String>) -> KnownDevicesPayload {
         KnownDevicesPayload {
             devices: self
-                .devices
-                .iter()
+                .registry
+                .devices()
                 .map(|device| self.device(device, runtime_video_ids))
                 .collect(),
         }
@@ -199,9 +195,8 @@ impl KnownDevices {
         device: &KnownDevice,
         runtime_video_ids: &HashSet<String>,
     ) -> KnownDevicePayload {
-        let id = device.id.as_deref();
         let has_access_code = device.has_access_code();
-        let has_video = id.is_some_and(|id| runtime_video_ids.contains(id));
+        let has_video = runtime_video_ids.contains(device.id.as_str());
         let has_video = has_access_code && has_video;
 
         KnownDevicePayload {
@@ -209,26 +204,17 @@ impl KnownDevices {
             name: device.name.clone(),
             online: device.online,
             source: device.source,
-            paths: device_paths(id, has_video),
+            paths: device_paths(&device.id, has_video),
         }
     }
 }
 
-fn device_paths(device_id: Option<&str>, has_video: bool) -> KnownDevicePaths {
-    let Some(device_id) = device_id else {
-        return KnownDevicePaths {
-            horizontal: None,
-            vertical: None,
-            thumbnail: None,
-            video: None,
-        };
-    };
-
+fn device_paths(device_id: &str, has_video: bool) -> KnownDevicePaths {
     let query = format!("device={}", encode_query_value(device_id));
     KnownDevicePaths {
-        horizontal: Some(format!("/overlay?{query}")),
-        vertical: Some(format!("/vertical?{query}")),
-        thumbnail: Some(format!("/api/thumbnail?{query}")),
+        horizontal: format!("/overlay?{query}"),
+        vertical: format!("/vertical?{query}"),
+        thumbnail: format!("/api/thumbnail?{query}"),
         video: has_video.then(|| format!("/api/video.mjpeg?{query}")),
     }
 }
@@ -433,31 +419,31 @@ mod tests {
 
     use super::KnownDevices;
     use crate::{
-        bambu::PrinterStatus,
-        devices::{DeviceSource, KnownDevice},
+        bambu::CloudDevice,
+        devices::DeviceRegistry,
+        local::{LocalDevice, LocalEndpoint},
     };
 
     #[test]
     fn known_devices_payload_includes_paths_without_access_codes() {
         let devices = KnownDevices {
-            devices: vec![
-                KnownDevice {
-                    id: Some("printer a/1".to_owned()),
-                    name: Some("Office".to_owned()),
-                    online: Some(true),
-                    access_code: Some("12345678".to_owned()),
-                    status: PrinterStatus::default(),
-                    source: DeviceSource::Local,
-                },
-                KnownDevice {
+            registry: DeviceRegistry::new(
+                vec![CloudDevice {
                     id: Some("printer-b".to_owned()),
                     name: Some("Garage".to_owned()),
                     online: Some(false),
                     access_code: Some("87654321".to_owned()),
-                    status: PrinterStatus::default(),
-                    source: DeviceSource::Cloud,
-                },
-            ],
+                    ..CloudDevice::default()
+                }],
+                vec![LocalDevice {
+                    id: "printer a/1".to_owned(),
+                    endpoint: {
+                        let mut endpoint = LocalEndpoint::new("192.168.1.50", 8883, "12345678");
+                        endpoint.name = Some("Office".to_owned());
+                        endpoint
+                    },
+                }],
+            ),
         };
 
         let value =
@@ -467,30 +453,30 @@ mod tests {
         assert!(!json.contains("12345678"));
         assert!(!json.contains("87654321"));
         assert!(!json.contains("accessCode"));
-        assert_eq!(value["devices"][0]["source"], "local");
+        assert_eq!(value["devices"][0]["source"], "cloud");
+        assert!(value["devices"][0]["paths"].get("video").is_none());
+        assert_eq!(value["devices"][1]["source"], "local");
         assert_eq!(
-            value["devices"][0]["paths"]["horizontal"],
+            value["devices"][1]["paths"]["horizontal"],
             "/overlay?device=printer%20a%2F1"
         );
         assert_eq!(
-            value["devices"][0]["paths"]["vertical"],
+            value["devices"][1]["paths"]["vertical"],
             "/vertical?device=printer%20a%2F1"
         );
         assert_eq!(
-            value["devices"][0]["paths"]["thumbnail"],
+            value["devices"][1]["paths"]["thumbnail"],
             "/api/thumbnail?device=printer%20a%2F1"
         );
         assert_eq!(
-            value["devices"][0]["paths"]["video"],
+            value["devices"][1]["paths"]["video"],
             "/api/video.mjpeg?device=printer%20a%2F1"
         );
-        assert_eq!(value["devices"][1]["source"], "cloud");
-        assert!(value["devices"][1]["paths"].get("video").is_none());
 
         let value = serde_json::to_value(devices.payload(&HashSet::from(["printer-b".to_owned()])))
             .unwrap();
         assert_eq!(
-            value["devices"][1]["paths"]["video"],
+            value["devices"][0]["paths"]["video"],
             "/api/video.mjpeg?device=printer-b"
         );
     }

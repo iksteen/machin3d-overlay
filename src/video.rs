@@ -22,7 +22,7 @@ use tracing::{info, warn};
 
 use crate::{
     device_tls,
-    devices::KnownDevice,
+    devices::{DeviceRegistry, KnownDevice},
     local::{parse_access_code_arg, Endpoint},
 };
 
@@ -111,7 +111,7 @@ pub struct VideoRuntime {
 }
 
 struct VideoRuntimeInner {
-    devices: Vec<KnownDevice>,
+    registry: DeviceRegistry,
     endpoints: Vec<VideoEndpoint>,
     tls: TlsConnector,
     streams: Mutex<HashMap<String, Arc<VideoStream>>>,
@@ -159,14 +159,14 @@ pub fn mjpeg_part(frame: &[u8]) -> Bytes {
 
 impl VideoRuntime {
     pub(crate) fn new(
-        devices: Vec<KnownDevice>,
+        registry: DeviceRegistry,
         endpoints: Vec<VideoEndpoint>,
         endpoint_map: HashMap<String, VideoEndpoint>,
     ) -> Result<Self> {
         let tls = device_tls::tokio_connector()?;
         Ok(Self {
             inner: Arc::new(VideoRuntimeInner {
-                devices,
+                registry,
                 endpoints,
                 tls,
                 streams: Mutex::new(HashMap::new()),
@@ -462,25 +462,20 @@ async fn resolve_session(
     inner: &VideoRuntimeInner,
     requested_device_id: Option<&str>,
 ) -> Result<VideoSession> {
-    select_session(&inner.devices, requested_device_id)
+    select_session(inner.registry.devices(), requested_device_id)
 }
 
-fn select_session(
-    devices: &[KnownDevice],
+fn select_session<'a>(
+    devices: impl IntoIterator<Item = &'a KnownDevice>,
     requested_device_id: Option<&str>,
 ) -> Result<VideoSession> {
+    let mut devices = devices.into_iter();
     let requested_device_id = requested_device_id
         .map(str::trim)
         .filter(|device_id| !device_id.is_empty());
 
     if let Some(requested_device_id) = requested_device_id {
-        let Some(device) = devices.iter().find(|device| {
-            device
-                .id
-                .as_deref()
-                .map(str::trim)
-                .is_some_and(|device_id| device_id == requested_device_id)
-        }) else {
+        let Some(device) = devices.find(|device| device.id.trim() == requested_device_id) else {
             bail!("device `{requested_device_id}` is not known");
         };
         return video_session(device).with_context(|| {
@@ -488,14 +483,14 @@ fn select_session(
         });
     }
 
-    let Some(device) = devices.first() else {
+    let Some(device) = devices.next() else {
         bail!("no devices are known");
     };
     video_session(device).context("first device did not include dev_access_code")
 }
 
 fn video_session(device: &KnownDevice) -> Option<VideoSession> {
-    let device_id = device.id.as_deref()?.trim().to_owned();
+    let device_id = device.id.trim().to_owned();
     let access_code = device.access_code.as_deref()?.trim().to_owned();
     if device_id.is_empty() || access_code.is_empty() {
         return None;
@@ -586,6 +581,7 @@ mod tests {
 
     fn device(value: serde_json::Value) -> KnownDevice {
         KnownDevice::from_cloud(serde_json::from_value::<CloudDevice>(value).unwrap())
+            .expect("device should have an ID")
     }
 
     fn endpoint(value: &str) -> VideoEndpoint {
