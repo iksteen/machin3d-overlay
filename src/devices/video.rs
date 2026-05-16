@@ -1,18 +1,62 @@
 use std::collections::HashMap;
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use tracing::{debug, info};
 
 use crate::{
     local::{Endpoint, LocalDevice},
-    video::{probe_video_endpoint, VideoEndpoint, DEFAULT_VIDEO_PORT},
+    video::{infer_video_device_id, probe_video_endpoint, VideoEndpoint, DEFAULT_VIDEO_PORT},
 };
 
-use super::registry::DeviceRegistry;
+use super::{access::hydrate_known_device, metadata::BindCatalog, registry::DeviceRegistry};
+
+#[derive(Default)]
+pub(super) struct ExplicitVideoEndpoints {
+    endpoints: Vec<(String, VideoEndpoint)>,
+}
 
 pub(crate) struct ResolvedVideoEndpoints {
     pub(crate) endpoints: Vec<VideoEndpoint>,
     pub(crate) endpoint_map: HashMap<String, VideoEndpoint>,
+}
+
+impl ExplicitVideoEndpoints {
+    pub(super) async fn resolve(endpoints: &[VideoEndpoint]) -> Result<Self> {
+        let mut resolved = Vec::with_capacity(endpoints.len());
+        for endpoint in endpoints {
+            let device_id = infer_video_device_id(endpoint).await.with_context(|| {
+                format!("could not infer device ID for --video-device `{endpoint}`")
+            })?;
+            resolved.push((device_id, endpoint.clone()));
+        }
+        Ok(Self {
+            endpoints: resolved,
+        })
+    }
+
+    pub(super) fn for_device(&self, device_id: &str) -> Option<&VideoEndpoint> {
+        self.endpoints
+            .iter()
+            .find(|(video_device_id, _)| video_device_id == device_id)
+            .map(|(_, endpoint)| endpoint)
+    }
+
+    pub(super) async fn attach(
+        self,
+        registry: &mut DeviceRegistry,
+        bind_catalog: &mut BindCatalog<'_>,
+    ) -> Result<()> {
+        for (device_id, video) in self.endpoints {
+            let Some(entry) = registry.get_mut(&device_id) else {
+                anyhow::bail!(
+                    "--video-device `{video}` is for device `{device_id}`, but no matching cloud or local device is configured"
+                );
+            };
+            hydrate_known_device(entry.device_mut(), Some(&video), bind_catalog).await?;
+            entry.set_explicit_video(video);
+        }
+        Ok(())
+    }
 }
 
 pub(crate) async fn resolve_video_endpoints(
@@ -92,6 +136,8 @@ fn local_video_endpoint(device: &LocalDevice) -> VideoEndpoint {
 #[cfg(test)]
 mod tests {
     use crate::{
+        bambu::CloudDevice,
+        devices::{metadata::BindCatalog, video::ExplicitVideoEndpoints, DeviceRegistry},
         local::{LocalDevice, LocalEndpoint},
         video::VideoEndpoint,
     };
@@ -102,6 +148,10 @@ mod tests {
         value.parse().expect("video endpoint should parse")
     }
 
+    fn explicit_video_endpoint(device_id: &str, value: &str) -> (String, VideoEndpoint) {
+        (device_id.to_owned(), endpoint(value))
+    }
+
     #[test]
     fn local_video_endpoint_uses_host_and_default_port() {
         let device = LocalDevice {
@@ -110,5 +160,83 @@ mod tests {
         };
 
         assert_eq!(local_video_endpoint(&device), endpoint("192.168.1.50:6000"));
+    }
+
+    #[tokio::test]
+    async fn explicit_video_requires_matching_known_device() {
+        let mut registry = DeviceRegistry::new(
+            vec![CloudDevice {
+                id: Some("printer-b".to_owned()),
+                ..CloudDevice::default()
+            }],
+            Vec::new(),
+        );
+        let mut bind_catalog = BindCatalog::new(None, None);
+
+        let error = ExplicitVideoEndpoints {
+            endpoints: vec![explicit_video_endpoint("printer-a", "192.168.1.50")],
+        }
+        .attach(&mut registry, &mut bind_catalog)
+        .await
+        .unwrap_err();
+
+        assert!(error.to_string().contains("--video-device"));
+        assert!(error.to_string().contains("printer-a"));
+        assert!(error
+            .to_string()
+            .contains("no matching cloud or local device"));
+    }
+
+    #[tokio::test]
+    async fn explicit_video_access_code_updates_cloud_device() {
+        let mut registry = DeviceRegistry::new(
+            vec![CloudDevice {
+                id: Some("printer-a".to_owned()),
+                ..CloudDevice::default()
+            }],
+            Vec::new(),
+        );
+        let mut bind_catalog = BindCatalog::new(None, None);
+
+        ExplicitVideoEndpoints {
+            endpoints: vec![explicit_video_endpoint(
+                "printer-a",
+                "192.168.1.50,12345678",
+            )],
+        }
+        .attach(&mut registry, &mut bind_catalog)
+        .await
+        .unwrap();
+
+        assert_eq!(
+            registry
+                .get("printer-a")
+                .unwrap()
+                .device()
+                .access_code
+                .as_deref(),
+            Some("12345678")
+        );
+    }
+
+    #[tokio::test]
+    async fn explicit_video_loads_bind_when_code_is_missing() {
+        let mut registry = DeviceRegistry::new(
+            vec![CloudDevice {
+                id: Some("printer-a".to_owned()),
+                ..CloudDevice::default()
+            }],
+            Vec::new(),
+        );
+        let mut bind_catalog = BindCatalog::new(None, None);
+
+        let error = ExplicitVideoEndpoints {
+            endpoints: vec![explicit_video_endpoint("printer-a", "192.168.1.50")],
+        }
+        .attach(&mut registry, &mut bind_catalog)
+        .await
+        .unwrap_err();
+
+        assert!(error.to_string().contains("Bambu Cloud token"));
     }
 }
