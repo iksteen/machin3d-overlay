@@ -35,13 +35,19 @@ pub(super) async fn video_mjpeg(
 
     let stream = stream! {
         let mut subscription = subscription;
+        let mut shutdown = state.shutdown.subscribe();
         loop {
-            match subscription.recv().await {
-                Ok(frame) => yield Ok::<bytes::Bytes, Infallible>(mjpeg::part(&frame)),
-                Err(tokio::sync::broadcast::error::RecvError::Lagged(skipped)) => {
-                    warn!(skipped, "MJPEG video client lagged behind");
+            tokio::select! {
+                _ = shutdown.cancelled() => break,
+                received = subscription.recv() => {
+                    match received {
+                        Ok(frame) => yield Ok::<bytes::Bytes, Infallible>(mjpeg::part(&frame)),
+                        Err(tokio::sync::broadcast::error::RecvError::Lagged(skipped)) => {
+                            warn!(skipped, "MJPEG video client lagged behind");
+                        }
+                        Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
+                    }
                 }
-                Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
             }
         }
     };

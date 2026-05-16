@@ -124,10 +124,12 @@ pub(super) async fn current_print_events(
 ) -> Sse<impl futures_core::Stream<Item = Result<Event, Infallible>>> {
     let mut changes = state.mqtt.subscribe();
     let mut interval = tokio::time::interval(Duration::from_secs(1));
+    let mut shutdown = state.shutdown.subscribe();
     let stream = stream! {
         yield Ok(current_print_event(&state).await);
         loop {
             tokio::select! {
+                _ = shutdown.cancelled() => break,
                 _ = interval.tick() => {}
                 received = changes.recv() => {
                     if received.is_err() {

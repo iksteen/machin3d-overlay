@@ -10,11 +10,11 @@ mod video;
 use anyhow::{Context, Result};
 use axum::{routing::get, Router};
 use tokio::net::TcpListener;
-use tracing::{info, warn};
+use tracing::info;
 
 use crate::{
-    devices::DeviceRegistry, local::Endpoint, mqtt::MqttRuntime, thumbnail::ThumbnailRuntime,
-    video::VideoRuntime,
+    devices::DeviceRegistry, local::Endpoint, mqtt::MqttRuntime, service::Shutdown,
+    thumbnail::ThumbnailRuntime, video::VideoRuntime,
 };
 
 use self::current_print::CurrentPrintService;
@@ -26,9 +26,10 @@ pub(crate) struct AppState {
     video: VideoRuntime,
     thumbnail: ThumbnailRuntime,
     devices: DeviceRegistry,
+    shutdown: Shutdown,
 }
 
-pub(crate) async fn serve_http(bind: Endpoint, state: AppState) -> Result<()> {
+pub(crate) async fn serve_http(bind: Endpoint, state: AppState, shutdown: Shutdown) -> Result<()> {
     let app = Router::new()
         .route("/", get(overlay_page::horizontal_overlay))
         .route("/overlay", get(overlay_page::horizontal_overlay))
@@ -51,42 +52,14 @@ pub(crate) async fn serve_http(bind: Endpoint, state: AppState) -> Result<()> {
     let listener = TcpListener::bind(address)
         .await
         .with_context(|| format!("failed to bind {address}"))?;
+    let mut shutdown = shutdown.subscribe();
     info!(%address, "serving Bambu overlay");
     axum::serve(listener, app)
-        .with_graceful_shutdown(shutdown_signal())
+        .with_graceful_shutdown(async move {
+            shutdown.cancelled().await;
+        })
         .await
         .context("HTTP server failed")
-}
-
-async fn shutdown_signal() {
-    let ctrl_c = async {
-        if let Err(error) = tokio::signal::ctrl_c().await {
-            warn!(%error, "failed to install Ctrl+C shutdown handler");
-            std::future::pending::<()>().await;
-        }
-    };
-
-    #[cfg(unix)]
-    let terminate = async {
-        match tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate()) {
-            Ok(mut signal) => {
-                signal.recv().await;
-            }
-            Err(error) => {
-                warn!(%error, "failed to install SIGTERM shutdown handler");
-                std::future::pending::<()>().await;
-            }
-        }
-    };
-
-    #[cfg(not(unix))]
-    let terminate = std::future::pending::<()>();
-
-    tokio::select! {
-        _ = ctrl_c => {}
-        _ = terminate => {}
-    }
-    info!("shutdown signal received");
 }
 
 pub(crate) fn app_state(
@@ -94,6 +67,7 @@ pub(crate) fn app_state(
     registry: DeviceRegistry,
     video: VideoRuntime,
     thumbnail: ThumbnailRuntime,
+    shutdown: Shutdown,
 ) -> AppState {
     let devices = registry.clone();
     let current_print = CurrentPrintService::new(registry.clone(), mqtt.clone());
@@ -104,5 +78,6 @@ pub(crate) fn app_state(
         video,
         thumbnail,
         devices,
+        shutdown,
     }
 }

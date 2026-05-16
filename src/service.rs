@@ -1,11 +1,24 @@
 use std::future::Future;
 
 use anyhow::{anyhow, Result};
-use tokio::task::{AbortHandle, JoinSet};
+use tokio::{
+    sync::watch,
+    task::{AbortHandle, JoinSet},
+};
+use tracing::{info, warn};
 
 pub(crate) struct ServiceTasks {
     aborts: Vec<AbortHandle>,
     monitors: JoinSet<TaskFailure>,
+}
+
+#[derive(Clone)]
+pub(crate) struct Shutdown {
+    sender: watch::Sender<bool>,
+}
+
+pub(crate) struct ShutdownReceiver {
+    receiver: watch::Receiver<bool>,
 }
 
 struct TaskFailure {
@@ -60,13 +73,74 @@ impl Drop for ServiceTasks {
     }
 }
 
+impl Shutdown {
+    pub(crate) fn new() -> Self {
+        let (sender, _) = watch::channel(false);
+        Self { sender }
+    }
+
+    pub(crate) fn trigger(&self) {
+        let _ = self.sender.send(true);
+    }
+
+    pub(crate) fn subscribe(&self) -> ShutdownReceiver {
+        ShutdownReceiver {
+            receiver: self.sender.subscribe(),
+        }
+    }
+}
+
+impl ShutdownReceiver {
+    pub(crate) async fn cancelled(&mut self) {
+        if *self.receiver.borrow() {
+            return;
+        }
+        while self.receiver.changed().await.is_ok() {
+            if *self.receiver.borrow() {
+                return;
+            }
+        }
+    }
+}
+
+pub(crate) async fn wait_for_process_shutdown_signal() {
+    let ctrl_c = async {
+        if let Err(error) = tokio::signal::ctrl_c().await {
+            warn!(%error, "failed to install Ctrl+C shutdown handler");
+            std::future::pending::<()>().await;
+        }
+    };
+
+    #[cfg(unix)]
+    let terminate = async {
+        match tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate()) {
+            Ok(mut signal) => {
+                signal.recv().await;
+            }
+            Err(error) => {
+                warn!(%error, "failed to install SIGTERM shutdown handler");
+                std::future::pending::<()>().await;
+            }
+        }
+    };
+
+    #[cfg(not(unix))]
+    let terminate = std::future::pending::<()>();
+
+    tokio::select! {
+        _ = ctrl_c => {}
+        _ = terminate => {}
+    }
+    info!("shutdown signal received");
+}
+
 #[cfg(test)]
 mod tests {
     use std::time::Duration;
 
     use tokio::sync::oneshot;
 
-    use super::ServiceTasks;
+    use super::{ServiceTasks, Shutdown};
 
     struct NotifyOnDrop(Option<oneshot::Sender<()>>);
 
@@ -107,5 +181,16 @@ mod tests {
             .await
             .expect("task should be aborted")
             .expect("drop notification should be sent");
+    }
+
+    #[tokio::test]
+    async fn shutdown_notifies_receivers() {
+        let shutdown = Shutdown::new();
+        let mut receiver = shutdown.subscribe();
+
+        shutdown.trigger();
+        tokio::time::timeout(Duration::from_secs(1), receiver.cancelled())
+            .await
+            .expect("shutdown receiver should be notified");
     }
 }

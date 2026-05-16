@@ -6,7 +6,7 @@ use crate::{
     devices::{resolve_devices, resolve_video_endpoints},
     local::{Endpoint, LocalEndpointConfig, MqttEndpoint},
     mqtt::{supervise_target, MqttRuntime, MqttTarget},
-    service::ServiceTasks,
+    service::{wait_for_process_shutdown_signal, ServiceTasks, Shutdown},
     thumbnail::ThumbnailRuntime,
     video::{VideoEndpoint, VideoRuntime},
     web::{app_state, serve_http},
@@ -37,6 +37,7 @@ impl Default for ServerConfig {
 }
 
 pub(crate) async fn serve(cloud: Option<CloudSession>, config: ServerConfig) -> Result<()> {
+    let shutdown = Shutdown::new();
     let mqtt = MqttRuntime::new();
     let registry = resolve_devices(
         cloud.as_ref(),
@@ -58,7 +59,7 @@ pub(crate) async fn serve(cloud: Option<CloudSession>, config: ServerConfig) -> 
     let thumbnail = ThumbnailRuntime::new(mqtt.clone(), cloud.clone(), registry.clone());
     let thumbnail_watcher = thumbnail.clone();
     let local_devices = registry.local_devices();
-    let state = app_state(mqtt.clone(), registry, video, thumbnail);
+    let state = app_state(mqtt.clone(), registry, video, thumbnail, shutdown.clone());
 
     let mut tasks = ServiceTasks::new();
     tasks.spawn("video worker watcher", async move {
@@ -83,9 +84,16 @@ pub(crate) async fn serve(cloud: Option<CloudSession>, config: ServerConfig) -> 
         );
     }
 
+    let server = serve_http(config.bind, state, shutdown.clone());
+    tokio::pin!(server);
+
     let result = tokio::select! {
-        result = serve_http(config.bind, state) => result,
+        result = &mut server => result,
         result = tasks.wait_for_failure() => result,
+        _ = wait_for_process_shutdown_signal() => {
+            shutdown.trigger();
+            server.await
+        }
     };
     video_shutdown.abort_workers().await;
     result
