@@ -1,7 +1,7 @@
 use std::{
     collections::{HashMap, HashSet},
     sync::{
-        atomic::{AtomicUsize, Ordering},
+        atomic::{AtomicBool, AtomicUsize, Ordering},
         Arc,
     },
     time::Duration,
@@ -11,11 +11,11 @@ use anyhow::{bail, ensure, Context, Result};
 use bytes::Bytes;
 use tokio::{
     io::{AsyncRead, AsyncReadExt, AsyncWriteExt},
-    sync::{broadcast, Mutex, Notify},
-    task::JoinHandle,
+    sync::{broadcast, mpsc, Mutex, Notify},
+    task::{AbortHandle, JoinHandle, JoinSet},
 };
 use tokio_native_tls::TlsConnector;
-use tracing::{info, warn};
+use tracing::{debug, error, info, warn};
 
 use crate::{
     device_tls,
@@ -44,6 +44,8 @@ struct VideoRuntimeInner {
     tls: TlsConnector,
     streams: Mutex<HashMap<String, Arc<VideoStream>>>,
     endpoint_map: Mutex<HashMap<String, VideoEndpoint>>,
+    worker_tx: mpsc::UnboundedSender<VideoWorkerTask>,
+    worker_rx: Mutex<mpsc::UnboundedReceiver<VideoWorkerTask>>,
 }
 
 struct VideoStream {
@@ -51,7 +53,18 @@ struct VideoStream {
     frames: broadcast::Sender<Bytes>,
     clients: AtomicUsize,
     no_clients: Notify,
-    worker: Mutex<Option<JoinHandle<()>>>,
+    worker: Mutex<Option<VideoWorkerHandle>>,
+}
+
+struct VideoWorkerHandle {
+    abort: AbortHandle,
+    finished: Arc<AtomicBool>,
+}
+
+struct VideoWorkerTask {
+    device_id: String,
+    finished: Arc<AtomicBool>,
+    handle: JoinHandle<()>,
 }
 
 pub struct VideoSubscription {
@@ -76,6 +89,7 @@ impl VideoRuntime {
         endpoint_map: HashMap<String, VideoEndpoint>,
     ) -> Result<Self> {
         let tls = device_tls::tokio_connector()?;
+        let (worker_tx, worker_rx) = mpsc::unbounded_channel();
         Ok(Self {
             inner: Arc::new(VideoRuntimeInner {
                 registry,
@@ -83,6 +97,8 @@ impl VideoRuntime {
                 tls,
                 streams: Mutex::new(HashMap::new()),
                 endpoint_map: Mutex::new(endpoint_map),
+                worker_tx,
+                worker_rx: Mutex::new(worker_rx),
             }),
         })
     }
@@ -99,7 +115,7 @@ impl VideoRuntime {
         let guard = VideoClientGuard {
             stream: Arc::clone(&stream),
         };
-        self.ensure_worker(stream).await;
+        self.ensure_worker(stream).await?;
 
         Ok(VideoSubscription {
             receiver,
@@ -115,6 +131,41 @@ impl VideoRuntime {
             .keys()
             .cloned()
             .collect()
+    }
+
+    pub(crate) async fn watch_workers(&self) {
+        let mut worker_rx = self.inner.worker_rx.lock().await;
+        let mut workers = JoinSet::new();
+
+        loop {
+            tokio::select! {
+                Some(task) = worker_rx.recv() => {
+                    workers.spawn(observe_worker(task));
+                }
+                Some(result) = workers.join_next(), if !workers.is_empty() => {
+                    match result {
+                        Ok(exit) => exit.log(),
+                        Err(error) => {
+                            error!(%error, "video worker observer task failed");
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    pub(crate) async fn abort_workers(&self) {
+        let streams = self
+            .inner
+            .streams
+            .lock()
+            .await
+            .values()
+            .cloned()
+            .collect::<Vec<_>>();
+        for stream in streams {
+            stream.abort_worker().await;
+        }
     }
 
     async fn stream_for_device(&self, device_id: &str) -> Arc<VideoStream> {
@@ -135,18 +186,13 @@ impl VideoRuntime {
         stream
     }
 
-    async fn ensure_worker(&self, stream: Arc<VideoStream>) {
+    async fn ensure_worker(&self, stream: Arc<VideoStream>) -> Result<()> {
         let mut worker = stream.worker.lock().await;
-        let should_start = match worker.as_ref() {
-            Some(handle) => handle.is_finished(),
-            None => true,
-        };
-        if should_start {
-            *worker = Some(tokio::spawn(run_worker(
-                Arc::clone(&self.inner),
-                Arc::clone(&stream),
-            )));
+        if worker.as_ref().is_some_and(|worker| !worker.is_finished()) {
+            return Ok(());
         }
+        *worker = Some(spawn_worker(&self.inner, &stream)?);
+        Ok(())
     }
 }
 
@@ -169,6 +215,112 @@ impl Drop for VideoClientGuard {
                 self.stream.no_clients.notify_waiters();
             }
         }
+    }
+}
+
+impl VideoStream {
+    async fn abort_worker(&self) {
+        if let Some(worker) = self.worker.lock().await.as_ref() {
+            worker.abort();
+        }
+    }
+}
+
+impl VideoWorkerHandle {
+    fn is_finished(&self) -> bool {
+        self.finished.load(Ordering::SeqCst)
+    }
+
+    fn abort(&self) {
+        self.abort.abort();
+    }
+}
+
+impl Drop for VideoWorkerHandle {
+    fn drop(&mut self) {
+        self.abort.abort();
+    }
+}
+
+#[derive(Debug, PartialEq, Eq)]
+struct VideoWorkerExit {
+    device_id: String,
+    status: VideoWorkerExitStatus,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+enum VideoWorkerExitStatus {
+    Stopped,
+    Cancelled,
+    Panicked(String),
+    Failed(String),
+}
+
+impl VideoWorkerExit {
+    fn log(self) {
+        match self.status {
+            VideoWorkerExitStatus::Stopped => {
+                debug!(device_id = %self.device_id, "video worker stopped");
+            }
+            VideoWorkerExitStatus::Cancelled => {
+                debug!(device_id = %self.device_id, "video worker cancelled");
+            }
+            VideoWorkerExitStatus::Panicked(error) => {
+                error!(
+                    device_id = %self.device_id,
+                    error = %error,
+                    "video worker panicked"
+                );
+            }
+            VideoWorkerExitStatus::Failed(error) => {
+                error!(
+                    device_id = %self.device_id,
+                    error = %error,
+                    "video worker failed"
+                );
+            }
+        }
+    }
+}
+
+fn spawn_worker(
+    inner: &Arc<VideoRuntimeInner>,
+    stream: &Arc<VideoStream>,
+) -> Result<VideoWorkerHandle> {
+    let finished = Arc::new(AtomicBool::new(false));
+    let finished_for_task = Arc::clone(&finished);
+    let device_id = stream.device_id.clone();
+    let worker_inner = Arc::clone(inner);
+    let worker_stream = Arc::clone(stream);
+    let handle = tokio::spawn(async move {
+        run_worker(worker_inner, worker_stream).await;
+        finished_for_task.store(true, Ordering::SeqCst);
+    });
+    let abort = handle.abort_handle();
+    if let Err(error) = inner.worker_tx.send(VideoWorkerTask {
+        device_id,
+        finished: Arc::clone(&finished),
+        handle,
+    }) {
+        let task = error.0;
+        task.handle.abort();
+        task.finished.store(true, Ordering::SeqCst);
+        bail!("video worker lifecycle monitor is not running");
+    }
+    Ok(VideoWorkerHandle { abort, finished })
+}
+
+async fn observe_worker(task: VideoWorkerTask) -> VideoWorkerExit {
+    let status = match task.handle.await {
+        Ok(()) => VideoWorkerExitStatus::Stopped,
+        Err(error) if error.is_cancelled() => VideoWorkerExitStatus::Cancelled,
+        Err(error) if error.is_panic() => VideoWorkerExitStatus::Panicked(error.to_string()),
+        Err(error) => VideoWorkerExitStatus::Failed(error.to_string()),
+    };
+    task.finished.store(true, Ordering::SeqCst);
+    VideoWorkerExit {
+        device_id: task.device_id,
+        status,
     }
 }
 
@@ -408,13 +560,21 @@ fn error_chain(error: &anyhow::Error) -> String {
 
 #[cfg(test)]
 mod tests {
-    use std::str::FromStr;
+    use std::{
+        str::FromStr,
+        sync::{
+            atomic::{AtomicBool, Ordering},
+            Arc,
+        },
+    };
 
     use serde_json::json;
 
     use crate::{bambu::CloudDevice, devices::KnownDevice};
 
-    use super::{order_endpoints, select_session};
+    use super::{
+        observe_worker, order_endpoints, select_session, VideoWorkerExitStatus, VideoWorkerTask,
+    };
     use crate::video::VideoEndpoint;
 
     fn device(value: serde_json::Value) -> KnownDevice {
@@ -503,5 +663,39 @@ mod tests {
                 endpoint("192.168.1.52"),
             ]
         );
+    }
+
+    #[tokio::test]
+    async fn observed_worker_records_normal_exit() {
+        let finished = Arc::new(AtomicBool::new(false));
+        let exit = observe_worker(VideoWorkerTask {
+            device_id: "printer-a".to_owned(),
+            finished: Arc::clone(&finished),
+            handle: tokio::spawn(async {}),
+        })
+        .await;
+
+        assert_eq!(exit.device_id, "printer-a");
+        assert_eq!(exit.status, VideoWorkerExitStatus::Stopped);
+        assert!(finished.load(Ordering::SeqCst));
+    }
+
+    #[tokio::test]
+    async fn observed_worker_records_cancellation() {
+        let finished = Arc::new(AtomicBool::new(false));
+        let handle = tokio::spawn(async {
+            std::future::pending::<()>().await;
+        });
+        handle.abort();
+
+        let exit = observe_worker(VideoWorkerTask {
+            device_id: "printer-a".to_owned(),
+            finished: Arc::clone(&finished),
+            handle,
+        })
+        .await;
+
+        assert_eq!(exit.status, VideoWorkerExitStatus::Cancelled);
+        assert!(finished.load(Ordering::SeqCst));
     }
 }

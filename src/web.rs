@@ -13,10 +13,7 @@ use tokio::net::TcpListener;
 use tracing::{info, warn};
 
 use crate::{
-    devices::{DeviceRegistry, ResolvedVideoEndpoints},
-    local::Endpoint,
-    mqtt::MqttRuntime,
-    thumbnail::ThumbnailRuntime,
+    devices::DeviceRegistry, local::Endpoint, mqtt::MqttRuntime, thumbnail::ThumbnailRuntime,
     video::VideoRuntime,
 };
 
@@ -95,22 +92,17 @@ async fn shutdown_signal() {
 pub(crate) fn app_state(
     mqtt: MqttRuntime,
     registry: DeviceRegistry,
-    video_endpoints: ResolvedVideoEndpoints,
+    video: VideoRuntime,
     thumbnail: ThumbnailRuntime,
-) -> Result<AppState> {
+) -> AppState {
     let devices = registry.clone();
     let current_print = CurrentPrintService::new(registry.clone(), mqtt.clone());
-    let video = VideoRuntime::new(
-        registry,
-        video_endpoints.endpoints,
-        video_endpoints.endpoint_map,
-    )?;
 
-    Ok(AppState {
+    AppState {
         current_print,
         mqtt,
         video,
         thumbnail,
         devices,
-    })
+    }
 }
