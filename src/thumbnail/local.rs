@@ -38,7 +38,7 @@ pub(super) async fn fetch_thumbnail(
         .map(str::trim)
         .filter(|filename| !filename.is_empty())
         .context("MQTT report does not include gcode_file for local thumbnail lookup")?;
-    match fetch_local_3mf_thumbnail(local, filename, report.print_type.as_deref()).await {
+    match fetch_local_3mf_thumbnail(local, filename).await {
         Ok(image) => Ok(ThumbnailStatus::Ready(image)),
         Err(error) if local_cloud_3mf_may_still_be_preparing(report, &error) => {
             Ok(ThumbnailStatus::Loading(format!(
@@ -53,27 +53,19 @@ pub(super) async fn fetch_thumbnail(
     }
 }
 
-async fn fetch_local_3mf_thumbnail(
-    device: &LocalDevice,
-    filename: &str,
-    print_type: Option<&str>,
-) -> Result<ThumbnailImage> {
+async fn fetch_local_3mf_thumbnail(device: &LocalDevice, filename: &str) -> Result<ThumbnailImage> {
     let device = device.clone();
     let filename = filename.to_owned();
-    let print_type = print_type.map(str::to_owned);
-    tokio::task::spawn_blocking(move || {
-        fetch_local_3mf_thumbnail_blocking(&device, &filename, print_type.as_deref())
-    })
-    .await
-    .context("local FTPS thumbnail task failed")?
+    tokio::task::spawn_blocking(move || fetch_local_3mf_thumbnail_blocking(&device, &filename))
+        .await
+        .context("local FTPS thumbnail task failed")?
 }
 
 fn fetch_local_3mf_thumbnail_blocking(
     device: &LocalDevice,
     filename: &str,
-    print_type: Option<&str>,
 ) -> Result<ThumbnailImage> {
-    let candidates = local_file_candidates(filename, print_type);
+    let candidates = local_file_candidates(filename);
     if candidates.is_empty() {
         bail!("no local file candidates were generated");
     }
@@ -202,7 +194,7 @@ fn resolve_socket_addr(address: &str) -> Result<SocketAddr> {
         .with_context(|| format!("local FTPS address `{address}` did not resolve"))
 }
 
-fn local_file_candidates(filename: &str, print_type: Option<&str>) -> Vec<String> {
+fn local_file_candidates(filename: &str) -> Vec<String> {
     let filename = filename.trim().replace('\\', "/");
     if filename.is_empty()
         || filename.contains('\0')
@@ -214,29 +206,14 @@ fn local_file_candidates(filename: &str, print_type: Option<&str>) -> Vec<String
 
     let relative = filename.trim_start_matches('/');
     let mut candidates = Vec::new();
-    if filename.starts_with('/')
-        || relative.starts_with("cache/")
-        || relative.starts_with("sdcard/")
+    if filename.starts_with('/') || relative.starts_with("cache/") || relative.starts_with("model/")
     {
         push_unique(&mut candidates, format!("/{relative}"));
     } else {
-        match print_type_root(print_type) {
-            Some(root) => push_unique(&mut candidates, format!("{root}/{relative}")),
-            None => {
-                push_unique(&mut candidates, format!("/cache/{relative}"));
-                push_unique(&mut candidates, format!("/sdcard/{relative}"));
-            }
-        }
+        push_unique(&mut candidates, format!("/cache/{relative}"));
+        push_unique(&mut candidates, format!("/model/{relative}"));
     }
     candidates
-}
-
-fn print_type_root(print_type: Option<&str>) -> Option<&'static str> {
-    match print_type.map(str::trim) {
-        Some(value) if value.eq_ignore_ascii_case("cloud") => Some("/cache"),
-        Some(value) if value.eq_ignore_ascii_case("local") => Some("/sdcard"),
-        _ => None,
-    }
 }
 
 fn push_unique(values: &mut Vec<String>, value: String) {
@@ -250,25 +227,17 @@ mod tests {
     use super::local_file_candidates;
 
     #[test]
-    fn local_file_candidates_try_print_cache_first() {
+    fn local_file_candidates_try_cache_then_model() {
         assert_eq!(
-            local_file_candidates("cube.3mf", None),
-            vec!["/cache/cube.3mf", "/sdcard/cube.3mf"]
+            local_file_candidates("cube.3mf"),
+            vec!["/cache/cube.3mf", "/model/cube.3mf"]
         );
         assert_eq!(
-            local_file_candidates("cube.3mf", Some("cloud")),
-            vec!["/cache/cube.3mf"]
+            local_file_candidates("/model/cube.3mf"),
+            vec!["/model/cube.3mf"]
         );
         assert_eq!(
-            local_file_candidates("cube.3mf", Some("local")),
-            vec!["/sdcard/cube.3mf"]
-        );
-        assert_eq!(
-            local_file_candidates("/sdcard/cube.3mf", Some("cloud")),
-            vec!["/sdcard/cube.3mf"]
-        );
-        assert_eq!(
-            local_file_candidates("/cache/cube.3mf", Some("local")),
+            local_file_candidates("/cache/cube.3mf"),
             vec!["/cache/cube.3mf"]
         );
     }
