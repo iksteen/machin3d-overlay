@@ -17,9 +17,9 @@ use serde_json::json;
 use url::form_urlencoded;
 
 use crate::{
+    device_summary::{summarize_devices, DeviceSummary, Spool, TaskSource},
     devices::DeviceRegistry,
     mqtt::{MqttRuntime, MqttStatusPayload},
-    overlay::{summarize_devices, DeviceSummary, Spool, TaskSource},
 };
 
 use super::AppState;
@@ -306,8 +306,8 @@ mod tests {
 
     use crate::{
         bambu::{CloudDevice, PrinterStatus},
+        device_summary::summarize_devices,
         devices::KnownDevice,
-        overlay::summarize_devices,
     };
 
     use super::overlay_device;
