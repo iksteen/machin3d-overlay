@@ -36,6 +36,7 @@ pub struct LocalDevice {
 }
 
 impl LocalEndpoint {
+    #[cfg(test)]
     pub fn new(host: impl Into<String>, port: u16, access_code: impl Into<String>) -> Self {
         Self {
             endpoint: Endpoint::new(host, port),
@@ -44,10 +45,6 @@ impl LocalEndpoint {
         }
     }
 
-    pub fn endpoint(&self) -> Endpoint {
-        self.endpoint.clone()
-    }
-
     pub fn host(&self) -> &str {
         self.endpoint.host.as_str()
     }
@@ -56,42 +53,14 @@ impl LocalEndpoint {
         self.endpoint.port
     }
 
-    pub fn address(&self) -> String {
-        self.endpoint().to_string()
-    }
-
     pub fn access_code(&self) -> &str {
         self.access_code.as_str()
-    }
-
-    pub fn name(&self) -> Option<&str> {
-        self.name.as_deref()
     }
 }
 
 impl LocalEndpointArg {
     pub fn endpoint(&self) -> Endpoint {
         self.endpoint.clone()
-    }
-
-    pub fn host(&self) -> &str {
-        self.endpoint.host.as_str()
-    }
-
-    pub fn port(&self) -> u16 {
-        self.endpoint.port
-    }
-
-    pub fn address(&self) -> String {
-        self.endpoint().to_string()
-    }
-
-    pub fn access_code(&self) -> Option<&str> {
-        self.access_code.as_deref()
-    }
-
-    pub fn name(&self) -> Option<&str> {
-        self.name.as_deref()
     }
 
     pub fn into_endpoint(self, access_code: String) -> LocalEndpoint {
