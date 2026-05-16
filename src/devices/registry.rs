@@ -1,15 +1,12 @@
 use std::collections::{HashMap, HashSet};
 
-use serde::Serialize;
-
 use crate::{
     bambu::{CloudDevice, PrinterStatus},
     local::LocalDevice,
     video::VideoEndpoint,
 };
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
-#[serde(rename_all = "kebab-case")]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum DeviceSource {
     Cloud,
     Local,

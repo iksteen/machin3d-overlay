@@ -9,8 +9,8 @@ use crate::{
     cloud::CloudSession,
     local::{Endpoint, LocalEndpointArg, MqttEndpoint},
     monitor::{monitor_mqtt, MonitorConfig},
+    server::{serve, ServerConfig, DEFAULT_HOST, DEFAULT_PORT},
     video::VideoEndpoint,
-    web::{serve, ServerConfig, DEFAULT_HOST, DEFAULT_PORT},
 };
 
 #[derive(Parser)]

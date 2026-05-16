@@ -1,24 +1,6 @@
 use anyhow::{ensure, Result};
-use bytes::Bytes;
 
 pub(super) const MAX_FRAME_SIZE: usize = 16 * 1024 * 1024;
-const MJPEG_BOUNDARY: &str = "frame";
-
-pub fn mjpeg_content_type() -> String {
-    format!("multipart/x-mixed-replace; boundary={MJPEG_BOUNDARY}")
-}
-
-pub fn mjpeg_part(frame: &[u8]) -> Bytes {
-    let header = format!(
-        "--{MJPEG_BOUNDARY}\r\nContent-Type: image/jpeg\r\nContent-Length: {}\r\n\r\n",
-        frame.len()
-    );
-    let mut part = Vec::with_capacity(header.len() + frame.len() + 2);
-    part.extend_from_slice(header.as_bytes());
-    part.extend_from_slice(frame);
-    part.extend_from_slice(b"\r\n");
-    Bytes::from(part)
-}
 
 pub(super) fn auth_packet(access_code: &str) -> Result<[u8; 80]> {
     let mut packet = [0_u8; 80];
@@ -48,7 +30,7 @@ pub(super) fn is_jpeg(frame: &[u8]) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::{auth_packet, is_jpeg, mjpeg_part};
+    use super::{auth_packet, is_jpeg};
 
     #[test]
     fn auth_packet_matches_a1_p1_protocol_layout() {
@@ -68,16 +50,6 @@ mod tests {
     fn auth_packet_rejects_fields_that_do_not_fit() {
         let error = auth_packet("123456789012345678901234567890123").unwrap_err();
         assert!(error.to_string().contains("video access code"));
-    }
-
-    #[test]
-    fn mjpeg_part_contains_boundary_headers_and_frame() {
-        let part = mjpeg_part(&[0xff, 0xd8, 0xff, 0xd9]);
-
-        assert!(
-            part.starts_with(b"--frame\r\nContent-Type: image/jpeg\r\nContent-Length: 4\r\n\r\n")
-        );
-        assert!(part.ends_with(&[0xff, 0xd8, 0xff, 0xd9, b'\r', b'\n']));
     }
 
     #[test]

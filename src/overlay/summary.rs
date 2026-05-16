@@ -1,89 +1,50 @@
 use std::collections::HashMap;
 
-use chrono::Utc;
-use serde::Serialize;
-
 use crate::{
     bambu::{AmsState, PrinterStatus, Tray},
     devices::KnownDevice,
 };
 
-use super::format::{
-    format_percent, format_seconds, format_temperature, format_weight, parse_bambu_datetime,
-    progress_number,
-};
-
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize)]
-enum TaskSource {
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub(crate) enum TaskSource {
     #[default]
-    #[serde(rename = "printer status")]
     PrinterStatus,
 }
 
 #[derive(Debug, Clone, Default)]
-pub(super) struct DeviceSummary {
-    id: String,
-    name: String,
-    online: bool,
-    task_name: Option<String>,
-    title: Option<String>,
-    filename: Option<String>,
-    task_status: Option<String>,
-    start_time: Option<String>,
-    prediction: Option<f64>,
-    progress: Option<f64>,
-    thumbnail: Option<String>,
-    weight: Option<String>,
-    layer_current: Option<i64>,
-    layer_total: Option<i64>,
-    time_remaining: Option<String>,
-    toolhead_temperature: Option<f64>,
-    bed_temperature: Option<f64>,
-    fan_speed: Option<f64>,
-    print_mode: Option<String>,
-    ams_spools: Vec<Spool>,
-    external_spool: Option<Spool>,
-    is_printing: bool,
-    task_source: TaskSource,
-    plate_index: Option<String>,
+pub(crate) struct DeviceSummary {
+    pub(crate) id: String,
+    pub(crate) name: String,
+    pub(crate) online: bool,
+    pub(crate) task_name: Option<String>,
+    pub(crate) title: Option<String>,
+    pub(crate) filename: Option<String>,
+    pub(crate) task_status: Option<String>,
+    pub(crate) start_time: Option<String>,
+    pub(crate) prediction: Option<f64>,
+    pub(crate) progress: Option<f64>,
+    pub(crate) thumbnail_task: Option<String>,
+    pub(crate) weight: Option<String>,
+    pub(crate) layer_current: Option<i64>,
+    pub(crate) layer_total: Option<i64>,
+    pub(crate) remaining_seconds: Option<f64>,
+    pub(crate) toolhead_temperature: Option<f64>,
+    pub(crate) bed_temperature: Option<f64>,
+    pub(crate) fan_speed: Option<f64>,
+    pub(crate) print_mode: Option<String>,
+    pub(crate) ams_spools: Vec<Spool>,
+    pub(crate) external_spool: Option<Spool>,
+    pub(crate) is_printing: bool,
+    pub(crate) task_source: TaskSource,
+    pub(crate) plate_index: Option<String>,
 }
 
-#[derive(Debug, Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub(super) struct OverlayDevice {
-    id: String,
-    name: String,
-    online: bool,
-    is_printing: bool,
-    title: Option<String>,
-    filename: Option<String>,
-    task_name: Option<String>,
-    task_status: Option<String>,
-    task_source: TaskSource,
-    mode: Option<String>,
-    progress: Option<f64>,
-    progress_source: Option<String>,
-    total_print_time: Option<String>,
-    weight: Option<String>,
-    layer_current: Option<i64>,
-    layer_total: Option<i64>,
-    time_remaining: Option<String>,
-    toolhead_temp: Option<String>,
-    bed_temp: Option<String>,
-    fan_speed: Option<String>,
-    started: Option<String>,
-    plate: Option<String>,
-    ams_spools: Vec<Spool>,
-    external_spool: Option<Spool>,
-    thumbnail: Option<String>,
-}
-
-#[derive(Debug, Clone, Serialize)]
-struct Spool {
-    label: String,
-    material: String,
-    color: String,
-    active: bool,
+#[derive(Debug, Clone)]
+pub(crate) struct Spool {
+    pub(crate) label: String,
+    pub(crate) material: String,
+    pub(crate) color: String,
+    pub(crate) active: bool,
 }
 
 struct DeviceFields<'a> {
@@ -217,8 +178,7 @@ impl<'a> DeviceFields<'a> {
             prediction,
             progress,
         );
-        let thumbnail = thumbnail_path(
-            &device_id,
+        let thumbnail_task = thumbnail_task(
             has_print_status_task,
             task_id.as_deref(),
             filename.as_deref(),
@@ -241,13 +201,13 @@ impl<'a> DeviceFields<'a> {
             start_time,
             prediction,
             progress,
-            thumbnail,
+            thumbnail_task,
             weight: self.print_string(|print| print.weight.as_ref()),
             layer_current: self.print_i64(|print| print.layer_current),
             layer_total: self.print_i64(|print| print.layer_total),
-            time_remaining: self
+            remaining_seconds: self
                 .print_f64(|print| print.remaining_minutes)
-                .map(|minutes| format_seconds(minutes * 60.0)),
+                .map(|minutes| minutes * 60.0),
             toolhead_temperature: self.print_f64(|print| print.toolhead_temperature),
             bed_temperature: self.print_f64(|print| print.bed_temperature),
             fan_speed: self.print_f64(|print| print.fan_speed),
@@ -261,7 +221,7 @@ impl<'a> DeviceFields<'a> {
     }
 }
 
-pub(super) fn summarize_devices<'a>(
+pub(crate) fn summarize_devices<'a>(
     devices: impl IntoIterator<Item = &'a KnownDevice>,
     reports: &HashMap<String, PrinterStatus>,
 ) -> Vec<DeviceSummary> {
@@ -280,8 +240,7 @@ fn summarize_device(
     fields.summary()
 }
 
-fn thumbnail_path(
-    device_id: &str,
+fn thumbnail_task(
     has_print_status_task: bool,
     task_id: Option<&str>,
     filename: Option<&str>,
@@ -291,79 +250,13 @@ fn thumbnail_path(
     if !has_print_status_task {
         return None;
     }
-    let mut path = format!("/api/thumbnail?device={}", encode_query_value(device_id));
-    if let Some(task) = task_id
+    task_id
         .or(filename)
         .or(task_name)
         .or(start_time)
         .map(str::trim)
         .filter(|task| !task.is_empty())
-    {
-        path.push_str("&task=");
-        path.push_str(&encode_query_value(task));
-    }
-    Some(path)
-}
-
-fn encode_query_value(value: &str) -> String {
-    let mut encoded = String::new();
-    for byte in value.bytes() {
-        match byte {
-            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'.' | b'_' | b'~' => {
-                encoded.push(byte as char);
-            }
-            _ => {
-                encoded.push('%');
-                encoded.push(hex(byte >> 4));
-                encoded.push(hex(byte & 0x0f));
-            }
-        }
-    }
-    encoded
-}
-
-fn hex(nibble: u8) -> char {
-    match nibble {
-        0..=9 => (b'0' + nibble) as char,
-        10..=15 => (b'A' + nibble - 10) as char,
-        _ => unreachable!("nibble must be four bits"),
-    }
-}
-
-pub(super) fn overlay_device(device: DeviceSummary) -> OverlayDevice {
-    let mut progress_source = "reported";
-    let mut progress = device.progress.and_then(progress_number);
-    if progress.is_none() {
-        progress = estimated_progress(&device);
-        progress_source = "estimated";
-    }
-    OverlayDevice {
-        id: device.id,
-        name: device.name,
-        online: device.online,
-        is_printing: device.is_printing,
-        title: device.title.or(device.task_name.clone()),
-        filename: device.filename,
-        task_name: device.task_name,
-        task_status: device.task_status,
-        task_source: device.task_source,
-        mode: device.print_mode,
-        progress: progress.map(|value| (value * 10.0).round() / 10.0),
-        progress_source: progress.map(|_| progress_source.to_owned()),
-        total_print_time: device.prediction.map(format_seconds),
-        weight: device.weight.as_deref().and_then(format_weight),
-        layer_current: device.layer_current,
-        layer_total: device.layer_total,
-        time_remaining: device.time_remaining,
-        toolhead_temp: device.toolhead_temperature.map(format_temperature),
-        bed_temp: device.bed_temperature.map(format_temperature),
-        fan_speed: device.fan_speed.map(format_percent),
-        started: device.start_time,
-        plate: device.plate_index,
-        ams_spools: device.ams_spools,
-        external_spool: device.external_spool,
-        thumbnail: device.thumbnail,
-    }
+        .map(str::to_owned)
 }
 
 fn ams_spools(ams: Option<&AmsState>, active_tray: Option<i64>) -> Vec<Spool> {
@@ -442,181 +335,17 @@ fn print_mode(print_status: &PrinterStatus) -> Option<String> {
     None
 }
 
-fn estimated_progress(device: &DeviceSummary) -> Option<f64> {
-    if device.progress.is_some() {
-        return None;
-    }
-    let start = device
-        .start_time
-        .as_deref()
-        .and_then(parse_bambu_datetime)?;
-    let prediction = device.prediction?;
-    if prediction <= 0.0 {
-        return None;
-    }
-    let elapsed = (Utc::now() - start).num_seconds() as f64;
-    Some((elapsed / prediction * 100.0).clamp(0.0, 100.0))
-}
-
 #[cfg(test)]
 mod tests {
-    use std::collections::HashMap;
-
     use serde::de::DeserializeOwned;
     use serde_json::{json, Value};
 
-    use crate::{
-        bambu::{CloudDevice, Tray},
-        devices::KnownDevice,
-    };
+    use crate::bambu::Tray;
 
-    use super::{overlay_device, spool_color, summarize_devices, TaskSource};
+    use super::spool_color;
 
     fn decode<T: DeserializeOwned>(value: Value) -> T {
         serde_json::from_value(value).expect("fixture should match typed API shape")
-    }
-
-    fn device(value: Value) -> KnownDevice {
-        KnownDevice::from_cloud(decode::<CloudDevice>(value)).expect("device should have an ID")
-    }
-
-    #[test]
-    fn summarize_devices_uses_matching_mqtt_report_fields_only() {
-        let devices = vec![
-            device(json!({
-                    "dev_id": "printer-a",
-                    "print": {
-                        "mc_percent": 12,
-                        "nozzle_temper": 210
-                    }
-            })),
-            device(json!({
-                    "dev_id": "printer-b",
-                    "print": {
-                        "mc_percent": 1
-                    }
-            })),
-        ];
-        let reports = HashMap::from([(
-            "printer-a".to_owned(),
-            decode(json!({
-                "mc_percent": 42,
-                "bed_temper": 60
-            })),
-        )]);
-
-        let summaries = summarize_devices(&devices, &reports);
-        let devices = summaries
-            .into_iter()
-            .map(overlay_device)
-            .collect::<Vec<_>>();
-
-        assert_eq!(devices[0].progress, Some(42.0));
-        assert_eq!(devices[0].toolhead_temp.as_deref(), Some("210C"));
-        assert_eq!(devices[0].bed_temp.as_deref(), Some("60C"));
-        assert_eq!(devices[1].progress, Some(1.0));
-    }
-
-    #[test]
-    fn summarize_devices_keeps_cloud_spools_when_mqtt_report_is_empty() {
-        let devices = vec![device(json!({
-                    "dev_id": "printer-a",
-                    "print": {
-                        "mc_percent": 12,
-                        "ams": {
-                            "ams": [
-                                {
-                                    "id": 0,
-                                    "tray": [
-                                        {
-                                            "id": 0,
-                                            "tray_type": "PLA",
-                                            "tray_color": "ff0000ff"
-                                        }
-                                    ]
-                                }
-                            ]
-                        },
-                        "vt_tray": {
-                            "id": 777,
-                            "tray_type": "PETG",
-                            "tray_color": "336699ff"
-                        }
-                    }
-        }))];
-        let reports = HashMap::from([(
-            "printer-a".to_owned(),
-            decode(json!({
-                "mc_percent": 42,
-                "ams": {"tray_now": "777", "ams": [{"id": 0, "tray": [{"id": 0, "tray_color": "00000000"}]}]},
-                "vt_tray": {"id": 777, "tray_color": "00000000"}
-            })),
-        )]);
-
-        let summaries = summarize_devices(&devices, &reports);
-        let device = overlay_device(summaries.into_iter().next().unwrap());
-
-        assert_eq!(device.progress, Some(42.0));
-        assert_eq!(device.ams_spools.len(), 1);
-        assert_eq!(device.ams_spools[0].material, "PLA");
-        assert_eq!(device.ams_spools[0].color, "#FF0000");
-        assert!(!device.ams_spools[0].active);
-        assert_eq!(device.external_spool.as_ref().unwrap().material, "PETG");
-        assert_eq!(device.external_spool.as_ref().unwrap().color, "#336699");
-        assert!(device.external_spool.as_ref().unwrap().active);
-    }
-
-    #[test]
-    fn summarize_devices_uses_catalog_status_and_spools() {
-        let devices = vec![device(json!({
-                    "dev_id": "printer-a",
-                    "dev_name": "Office X1",
-                    "dev_online": true,
-                    "print": {
-                        "subtask_name": "Calibration cube",
-                        "mc_percent": 25,
-                        "cost_time": 3600,
-                        "gcode_start_time": "2026-05-11T00:00:00Z",
-                        "layer_num": 4,
-                        "total_layer_num": 20,
-                        "nozzle_temper": 220,
-                        "bed_temper": 60,
-                        "ams": {
-                            "tray_now": "0",
-                            "ams": [
-                                {
-                                    "id": 0,
-                                    "tray": [
-                                        {
-                                            "id": 0,
-                                            "tray_type": "PLA",
-                                            "tray_color": "ff0000ff"
-                                        }
-                                    ]
-                                }
-                            ]
-                        }
-                    }
-        }))];
-
-        let summaries = summarize_devices(&devices, &HashMap::new());
-        let device = overlay_device(summaries.into_iter().next().unwrap());
-
-        assert_eq!(device.name, "Office X1");
-        assert_eq!(device.title.as_deref(), Some("Calibration cube"));
-        assert_eq!(device.task_source, TaskSource::PrinterStatus);
-        assert_eq!(device.progress, Some(25.0));
-        assert_eq!(device.total_print_time.as_deref(), Some("1h"));
-        assert_eq!(device.weight, None);
-        assert_eq!(device.plate, None);
-        assert_eq!(
-            device.thumbnail.as_deref(),
-            Some("/api/thumbnail?device=printer-a&task=Calibration%20cube")
-        );
-        assert_eq!(device.ams_spools.len(), 1);
-        assert_eq!(device.ams_spools[0].material, "PLA");
-        assert_eq!(device.ams_spools[0].color, "#FF0000");
-        assert!(device.ams_spools[0].active);
     }
 
     #[test]

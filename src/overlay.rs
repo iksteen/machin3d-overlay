@@ -1,5 +1,3 @@
-mod format;
-mod service;
 mod summary;
 
-pub use service::{error_payload, ErrorPayload, OverlayPayload, SnapshotService};
+pub(crate) use summary::{summarize_devices, DeviceSummary, Spool, TaskSource};

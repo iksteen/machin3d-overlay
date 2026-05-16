@@ -25,7 +25,7 @@ use crate::{
 use super::{
     endpoint::VideoEndpoint,
     probe::connect_video_tcp,
-    protocol::{auth_packet, is_jpeg, mjpeg_part, MAX_FRAME_SIZE},
+    protocol::{auth_packet, is_jpeg, MAX_FRAME_SIZE},
 };
 
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
@@ -48,7 +48,7 @@ struct VideoRuntimeInner {
 
 struct VideoStream {
     device_id: String,
-    parts: broadcast::Sender<Bytes>,
+    frames: broadcast::Sender<Bytes>,
     clients: AtomicUsize,
     no_clients: Notify,
     worker: Mutex<Option<JoinHandle<()>>>,
@@ -94,7 +94,7 @@ impl VideoRuntime {
 
         let session = resolve_session(&self.inner, device_id).await?;
         let stream = self.stream_for_device(&session.device_id).await;
-        let receiver = stream.parts.subscribe();
+        let receiver = stream.frames.subscribe();
         stream.clients.fetch_add(1, Ordering::SeqCst);
         let guard = VideoClientGuard {
             stream: Arc::clone(&stream),
@@ -123,10 +123,10 @@ impl VideoRuntime {
             return Arc::clone(stream);
         }
 
-        let (parts, _) = broadcast::channel(4);
+        let (frames, _) = broadcast::channel(4);
         let stream = Arc::new(VideoStream {
             device_id: device_id.to_owned(),
-            parts,
+            frames,
             clients: AtomicUsize::new(0),
             no_clients: Notify::new(),
             worker: Mutex::new(None),
@@ -273,7 +273,7 @@ async fn stream_endpoint_once(
         }
         if is_jpeg(&frame) {
             remember_endpoint(inner, &session.device_id, endpoint).await;
-            let _ = video.parts.send(mjpeg_part(&frame));
+            let _ = video.frames.send(Bytes::from(frame));
         } else {
             warn!("discarding video frame without JPEG magic bytes");
         }

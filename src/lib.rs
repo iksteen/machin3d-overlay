@@ -9,6 +9,7 @@ pub mod local;
 pub(crate) mod monitor;
 pub mod mqtt;
 pub mod overlay;
+pub(crate) mod server;
 pub(crate) mod thumbnail;
 pub mod video;
 pub mod web;
