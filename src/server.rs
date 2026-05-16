@@ -2,10 +2,11 @@ use anyhow::Result;
 
 use crate::{
     bambu::{MQTT_HOST, MQTT_PORT},
-    cloud::{cloud_mqtt_startup, start_cloud_mqtt, CloudSession},
+    cloud::{cloud_mqtt_startup, CloudSession},
     devices::{resolve_devices, resolve_video_endpoints},
     local::{Endpoint, LocalEndpointConfig, MqttEndpoint},
-    mqtt::{start_local_supervisors, MqttRuntime},
+    mqtt::{supervise_target, MqttRuntime, MqttTarget},
+    service::ServiceTasks,
     thumbnail::ThumbnailRuntime,
     video::VideoEndpoint,
     web::{app_state, serve_http},
@@ -48,11 +49,32 @@ pub(crate) async fn serve(cloud: Option<CloudSession>, config: ServerConfig) -> 
     let cloud_mqtt = cloud_mqtt_startup(cloud.as_ref(), &config.cloud_mqtt, &cloud_mqtt_ids)?;
     let video = resolve_video_endpoints(&registry).await?;
     let thumbnail = ThumbnailRuntime::new(mqtt.clone(), cloud.clone(), registry.clone());
-    thumbnail.start();
+    let thumbnail_watcher = thumbnail.clone();
     let local_devices = registry.local_devices();
     let state = app_state(mqtt.clone(), registry, video, thumbnail)?;
 
-    start_cloud_mqtt(mqtt.clone(), cloud_mqtt);
-    start_local_supervisors(mqtt, local_devices);
-    serve_http(config.bind, state).await
+    let mut tasks = ServiceTasks::new();
+    tasks.spawn("thumbnail watcher", async move {
+        thumbnail_watcher.watch_task_changes().await;
+    });
+
+    if let Some(cloud_mqtt) = cloud_mqtt {
+        tasks.spawn(
+            "cloud MQTT supervisor",
+            supervise_target(mqtt.clone(), cloud_mqtt.into_target()),
+        );
+    }
+
+    for device in local_devices {
+        let task_name = format!("local MQTT supervisor ({})", device.id);
+        tasks.spawn(
+            task_name,
+            supervise_target(mqtt.clone(), MqttTarget::local(device)),
+        );
+    }
+
+    tokio::select! {
+        result = serve_http(config.bind, state) => result,
+        result = tasks.wait_for_failure() => result,
+    }
 }

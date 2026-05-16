@@ -60,11 +60,6 @@ impl ThumbnailRuntime {
         }
     }
 
-    pub(crate) fn start(&self) {
-        let runtime = self.clone();
-        tokio::spawn(async move { runtime.watch_task_changes().await });
-    }
-
     pub(crate) async fn thumbnail(
         &self,
         requested_device_id: Option<&str>,
@@ -78,7 +73,7 @@ impl ThumbnailRuntime {
         Ok(self.cached_status(&device_id).await)
     }
 
-    async fn watch_task_changes(&self) {
+    pub(crate) async fn watch_task_changes(&self) {
         let mut changes = self.inner.mqtt.subscribe();
         self.refresh_changed_devices().await;
         loop {

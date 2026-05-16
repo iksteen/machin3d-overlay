@@ -10,7 +10,7 @@ mod video;
 use anyhow::{Context, Result};
 use axum::{routing::get, Router};
 use tokio::net::TcpListener;
-use tracing::info;
+use tracing::{info, warn};
 
 use crate::{
     devices::{DeviceRegistry, ResolvedVideoEndpoints},
@@ -56,8 +56,40 @@ pub(crate) async fn serve_http(bind: Endpoint, state: AppState) -> Result<()> {
         .with_context(|| format!("failed to bind {address}"))?;
     info!(%address, "serving Bambu overlay");
     axum::serve(listener, app)
+        .with_graceful_shutdown(shutdown_signal())
         .await
         .context("HTTP server failed")
+}
+
+async fn shutdown_signal() {
+    let ctrl_c = async {
+        if let Err(error) = tokio::signal::ctrl_c().await {
+            warn!(%error, "failed to install Ctrl+C shutdown handler");
+            std::future::pending::<()>().await;
+        }
+    };
+
+    #[cfg(unix)]
+    let terminate = async {
+        match tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate()) {
+            Ok(mut signal) => {
+                signal.recv().await;
+            }
+            Err(error) => {
+                warn!(%error, "failed to install SIGTERM shutdown handler");
+                std::future::pending::<()>().await;
+            }
+        }
+    };
+
+    #[cfg(not(unix))]
+    let terminate = std::future::pending::<()>();
+
+    tokio::select! {
+        _ = ctrl_c => {}
+        _ = terminate => {}
+    }
+    info!("shutdown signal received");
 }
 
 pub(crate) fn app_state(

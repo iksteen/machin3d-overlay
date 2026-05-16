@@ -1,10 +1,9 @@
 use anyhow::{Context, Result};
-use tracing::{error, warn};
 
 use crate::{
     bambu::{BambuClient, CloudDevice},
     local::MqttEndpoint,
-    mqtt::{supervise_target, MqttRuntime, MqttTarget},
+    mqtt::MqttTarget,
 };
 
 #[derive(Clone)]
@@ -19,6 +18,17 @@ pub(crate) struct CloudMqttStartup {
     pub(crate) user_id: String,
     pub(crate) access_token: String,
     pub(crate) device_ids: Vec<String>,
+}
+
+impl CloudMqttStartup {
+    pub(crate) fn into_target(self) -> MqttTarget {
+        MqttTarget::cloud(
+            self.endpoint,
+            self.user_id,
+            self.access_token,
+            self.device_ids,
+        )
+    }
 }
 
 pub(crate) async fn bound_cloud_devices(cloud: Option<&CloudSession>) -> Result<Vec<CloudDevice>> {
@@ -63,37 +73,6 @@ pub(crate) fn cloud_mqtt_startup(
         access_token: cloud.access_token.clone(),
         device_ids: device_ids.to_vec(),
     }))
-}
-
-pub(crate) fn start_cloud_mqtt(runtime: MqttRuntime, startup: Option<CloudMqttStartup>) {
-    let Some(startup) = startup else {
-        return;
-    };
-
-    let mqtt_status = runtime.clone();
-    let target = MqttTarget::cloud(
-        startup.endpoint,
-        startup.user_id,
-        startup.access_token,
-        startup.device_ids,
-    );
-    let supervisor = tokio::spawn(supervise_target(runtime, target));
-    tokio::spawn(async move {
-        match supervisor.await {
-            Ok(()) => {
-                warn!("MQTT supervisor exited unexpectedly");
-                mqtt_status
-                    .set_cloud_error("MQTT supervisor exited unexpectedly")
-                    .await;
-            }
-            Err(error) => {
-                error!(%error, "MQTT supervisor task failed");
-                mqtt_status
-                    .set_cloud_error(format!("MQTT supervisor task failed: {error}"))
-                    .await;
-            }
-        }
-    });
 }
 
 #[cfg(test)]

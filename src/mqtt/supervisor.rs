@@ -2,9 +2,9 @@ use std::time::Duration;
 
 use anyhow::Result;
 use serde::Deserialize;
-use tracing::{debug, error, warn};
+use tracing::{debug, warn};
 
-use crate::{bambu::PrinterStatus, local::LocalDevice};
+use crate::bambu::PrinterStatus;
 
 use super::{session::ReportSession, MqttRuntime, MqttTarget};
 
@@ -22,44 +22,6 @@ impl ReportPayload {
             ReportPayload::Bare(report) => report,
         }
     }
-}
-
-pub(crate) fn start_local_supervisors(runtime: MqttRuntime, devices: Vec<LocalDevice>) {
-    for device in devices {
-        start_local_supervisor(runtime.clone(), MqttTarget::local(device));
-    }
-}
-
-fn start_local_supervisor(runtime: MqttRuntime, target: MqttTarget) {
-    let device_id = target.connection_key();
-    let mqtt_status = runtime.clone();
-    let supervisor = tokio::spawn(supervise_target(runtime, target));
-    tokio::spawn(async move {
-        match supervisor.await {
-            Ok(()) => {
-                warn!(
-                    device_id = %device_id,
-                    "local MQTT supervisor exited unexpectedly"
-                );
-                mqtt_status
-                    .set_connection_error(device_id, "local MQTT supervisor exited unexpectedly")
-                    .await;
-            }
-            Err(error) => {
-                error!(
-                    device_id = %device_id,
-                    error = %error,
-                    "local MQTT supervisor task failed"
-                );
-                mqtt_status
-                    .set_connection_error(
-                        device_id,
-                        format!("local MQTT supervisor task failed: {error}"),
-                    )
-                    .await;
-            }
-        }
-    });
 }
 
 pub(crate) async fn supervise_target(runtime: MqttRuntime, target: MqttTarget) {

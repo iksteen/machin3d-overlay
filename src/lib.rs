@@ -10,6 +10,7 @@ pub(crate) mod local;
 pub(crate) mod monitor;
 pub(crate) mod mqtt;
 pub(crate) mod server;
+pub(crate) mod service;
 pub(crate) mod thumbnail;
 pub(crate) mod video;
 pub(crate) mod web;
