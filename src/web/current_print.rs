@@ -299,160 +299,54 @@ fn parse_bambu_datetime(text: &str) -> Option<chrono::DateTime<Utc>> {
 
 #[cfg(test)]
 mod tests {
-    use std::collections::HashMap;
-
-    use serde::de::DeserializeOwned;
-    use serde_json::{json, Value};
-
-    use crate::{
-        bambu::{CloudDevice, PrinterStatus},
-        device_summary::summarize_devices,
-        devices::KnownDevice,
-    };
+    use crate::device_summary::{DeviceSummary, Spool, TaskSource};
 
     use super::overlay_device;
 
-    fn decode<T: DeserializeOwned>(value: Value) -> T {
-        serde_json::from_value(value).expect("fixture should match typed API shape")
-    }
-
-    fn device(value: Value) -> KnownDevice {
-        KnownDevice::from_cloud(decode::<CloudDevice>(value)).expect("device should have an ID")
-    }
-
     #[test]
-    fn overlay_device_uses_matching_mqtt_report_fields_only() {
-        let devices = vec![
-            device(json!({
-                    "dev_id": "printer-a",
-                    "print": {
-                        "mc_percent": 12,
-                        "nozzle_temper": 210
-                    }
-            })),
-            device(json!({
-                    "dev_id": "printer-b",
-                    "print": {
-                        "mc_percent": 1
-                    }
-            })),
-        ];
-        let reports = HashMap::from([(
-            "printer-a".to_owned(),
-            decode::<PrinterStatus>(json!({
-                "mc_percent": 42,
-                "bed_temper": 60
-            })),
-        )]);
-
-        let devices = summarize_devices(&devices, &reports)
-            .into_iter()
-            .map(overlay_device)
-            .collect::<Vec<_>>();
-
-        assert_eq!(devices[0].progress, Some(42.0));
-        assert_eq!(devices[0].toolhead_temp.as_deref(), Some("210C"));
-        assert_eq!(devices[0].bed_temp.as_deref(), Some("60C"));
-        assert_eq!(devices[1].progress, Some(1.0));
-    }
-
-    #[test]
-    fn overlay_device_keeps_cloud_spools_when_mqtt_report_is_empty() {
-        let devices = vec![device(json!({
-                    "dev_id": "printer-a",
-                    "print": {
-                        "mc_percent": 12,
-                        "ams": {
-                            "ams": [
-                                {
-                                    "id": 0,
-                                    "tray": [
-                                        {
-                                            "id": 0,
-                                            "tray_type": "PLA",
-                                            "tray_color": "ff0000ff"
-                                        }
-                                    ]
-                                }
-                            ]
-                        },
-                        "vt_tray": {
-                            "id": 777,
-                            "tray_type": "PETG",
-                            "tray_color": "336699ff"
-                        }
-                    }
-        }))];
-        let reports = HashMap::from([(
-            "printer-a".to_owned(),
-            decode::<PrinterStatus>(json!({
-                "mc_percent": 42,
-                "ams": {"tray_now": "777", "ams": [{"id": 0, "tray": [{"id": 0, "tray_color": "00000000"}]}]},
-                "vt_tray": {"id": 777, "tray_color": "00000000"}
-            })),
-        )]);
-
-        let device = summarize_devices(&devices, &reports)
-            .into_iter()
-            .map(overlay_device)
-            .next()
-            .unwrap();
-
-        assert_eq!(device.progress, Some(42.0));
-        assert_eq!(device.ams_spools.len(), 1);
-        assert_eq!(device.ams_spools[0].material, "PLA");
-        assert_eq!(device.ams_spools[0].color, "#FF0000");
-        assert!(!device.ams_spools[0].active);
-        assert_eq!(device.external_spool.as_ref().unwrap().material, "PETG");
-        assert_eq!(device.external_spool.as_ref().unwrap().color, "#336699");
-        assert!(device.external_spool.as_ref().unwrap().active);
-    }
-
-    #[test]
-    fn overlay_device_uses_catalog_status_and_spools() {
-        let devices = vec![device(json!({
-                    "dev_id": "printer-a",
-                    "dev_name": "Office X1",
-                    "dev_online": true,
-                    "print": {
-                        "subtask_name": "Calibration cube",
-                        "mc_percent": 25,
-                        "cost_time": 3600,
-                        "gcode_start_time": "2026-05-11T00:00:00Z",
-                        "layer_num": 4,
-                        "total_layer_num": 20,
-                        "nozzle_temper": 220,
-                        "bed_temper": 60,
-                        "ams": {
-                            "tray_now": "0",
-                            "ams": [
-                                {
-                                    "id": 0,
-                                    "tray": [
-                                        {
-                                            "id": 0,
-                                            "tray_type": "PLA",
-                                            "tray_color": "ff0000ff"
-                                        }
-                                    ]
-                                }
-                            ]
-                        }
-                    }
-        }))];
-
-        let device = summarize_devices(&devices, &HashMap::new())
-            .into_iter()
-            .map(overlay_device)
-            .next()
-            .unwrap();
+    fn overlay_device_formats_web_payload_fields() {
+        let device = overlay_device(DeviceSummary {
+            id: "printer-a".to_owned(),
+            name: "Office X1".to_owned(),
+            online: true,
+            is_printing: true,
+            title: Some("Calibration cube".to_owned()),
+            task_name: Some("Calibration cube".to_owned()),
+            task_status: Some("RUNNING".to_owned()),
+            task_source: TaskSource::PrinterStatus,
+            prediction: Some(3600.0),
+            progress: Some(25.04),
+            weight: Some("1250".to_owned()),
+            layer_current: Some(4),
+            layer_total: Some(20),
+            remaining_seconds: Some(90.0),
+            toolhead_temperature: Some(219.6),
+            bed_temperature: Some(60.4),
+            fan_speed: Some(101.0),
+            start_time: Some("2026-05-11T00:00:00Z".to_owned()),
+            print_mode: Some("Standard".to_owned()),
+            plate_index: None,
+            thumbnail_task: Some("Calibration cube".to_owned()),
+            ams_spools: vec![Spool {
+                label: "1".to_owned(),
+                material: "PLA".to_owned(),
+                color: "#FF0000".to_owned(),
+                active: true,
+            }],
+            external_spool: None,
+            ..DeviceSummary::default()
+        });
 
         assert_eq!(device.name, "Office X1");
         assert_eq!(device.title.as_deref(), Some("Calibration cube"));
         assert_eq!(device.task_source, "printer status");
         assert_eq!(device.progress, Some(25.0));
         assert_eq!(device.total_print_time.as_deref(), Some("1h"));
-        assert_eq!(device.weight, None);
+        assert_eq!(device.weight.as_deref(), Some("1.2kg"));
+        assert_eq!(device.time_remaining.as_deref(), Some("1m 30s"));
+        assert_eq!(device.toolhead_temp.as_deref(), Some("220C"));
+        assert_eq!(device.bed_temp.as_deref(), Some("60C"));
+        assert_eq!(device.fan_speed.as_deref(), Some("100%"));
         assert_eq!(device.plate, None);
         assert_eq!(
             device.thumbnail.as_deref(),
