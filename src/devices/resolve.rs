@@ -5,7 +5,7 @@ use tracing::info;
 
 use crate::{
     cloud::{bound_cloud_devices, explicit_cloud_devices, CloudSession},
-    local::{infer_local_device_id, LocalDevice, LocalEndpointArg},
+    local::{infer_local_device_id, LocalDevice, LocalEndpointConfig},
     video::{infer_video_device_id, VideoEndpoint},
 };
 
@@ -17,7 +17,7 @@ use super::{
 pub(crate) async fn resolve_devices(
     cloud: Option<&CloudSession>,
     cloud_configs: &[String],
-    local_configs: &[LocalEndpointArg],
+    local_configs: &[LocalEndpointConfig],
     video_endpoints: &[VideoEndpoint],
 ) -> Result<DeviceRegistry> {
     let explicit_video = resolve_explicit_video_endpoints(video_endpoints).await?;
@@ -63,7 +63,7 @@ async fn attach_explicit_video(
 }
 
 async fn resolve_local_devices(
-    configs: &[LocalEndpointArg],
+    configs: &[LocalEndpointConfig],
     video_endpoints: &[(String, VideoEndpoint)],
     bind_catalog: &mut BindCatalog<'_>,
 ) -> Result<Vec<LocalDevice>> {
@@ -94,7 +94,7 @@ async fn resolve_local_devices(
 
 async fn resolve_local_device_access(
     device_id: String,
-    mut endpoint: LocalEndpointArg,
+    mut endpoint: LocalEndpointConfig,
     video_endpoints: &[(String, VideoEndpoint)],
     bind_catalog: &mut BindCatalog<'_>,
 ) -> Result<LocalDevice> {
@@ -133,7 +133,7 @@ async fn resolve_explicit_video_endpoints(
 fn should_enumerate_cloud_catalog(
     cloud_available: bool,
     cloud_configs: &[String],
-    local_configs: &[LocalEndpointArg],
+    local_configs: &[LocalEndpointConfig],
 ) -> bool {
     cloud_available && cloud_configs.is_empty() && local_configs.is_empty()
 }
@@ -177,7 +177,7 @@ fn has_text(value: Option<&str>) -> bool {
     value.is_some_and(|value| !value.trim().is_empty())
 }
 
-fn finalize_local_device(device_id: String, endpoint: LocalEndpointArg) -> Result<LocalDevice> {
+fn finalize_local_device(device_id: String, endpoint: LocalEndpointConfig) -> Result<LocalDevice> {
     let access_code = endpoint
         .access_code
         .as_deref()
@@ -203,11 +203,11 @@ mod tests {
     use crate::{
         bambu::CloudDevice,
         devices::{metadata::BindCatalog, DeviceRegistry},
-        local::LocalEndpointArg,
+        local::LocalEndpointConfig,
         video::VideoEndpoint,
     };
 
-    fn local_arg(value: &str) -> LocalEndpointArg {
+    fn local_arg(value: &str) -> LocalEndpointConfig {
         value.parse().expect("local device should parse")
     }
 

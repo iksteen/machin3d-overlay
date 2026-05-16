@@ -4,14 +4,14 @@ use tracing::info;
 use crate::{
     cloud::{cloud_mqtt_startup, CloudSession},
     devices::{resolve_devices, DeviceRegistry},
-    local::{LocalDevice, LocalEndpointArg, MqttEndpoint},
+    local::{LocalDevice, LocalEndpointConfig, MqttEndpoint},
     mqtt::{monitor_target, MqttTarget},
 };
 
 pub(crate) struct MonitorConfig {
     pub cloud_mqtt: MqttEndpoint,
     pub cloud_devices: Vec<String>,
-    pub local_devices: Vec<LocalEndpointArg>,
+    pub local_devices: Vec<LocalEndpointConfig>,
     pub device: Option<String>,
 }
 

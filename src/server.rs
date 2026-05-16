@@ -4,7 +4,7 @@ use crate::{
     bambu::{MQTT_HOST, MQTT_PORT},
     cloud::{cloud_mqtt_startup, start_cloud_mqtt, CloudSession},
     devices::{resolve_devices, resolve_video_endpoints},
-    local::{Endpoint, LocalEndpointArg, MqttEndpoint},
+    local::{Endpoint, LocalEndpointConfig, MqttEndpoint},
     mqtt::{start_local_supervisors, MqttRuntime},
     thumbnail::ThumbnailRuntime,
     video::VideoEndpoint,
@@ -18,7 +18,7 @@ pub(crate) const DEFAULT_PORT: u16 = 8765;
 pub(crate) struct ServerConfig {
     pub bind: Endpoint,
     pub cloud_mqtt: MqttEndpoint,
-    pub local_devices: Vec<LocalEndpointArg>,
+    pub local_devices: Vec<LocalEndpointConfig>,
     pub cloud_devices: Vec<String>,
     pub video_endpoints: Vec<VideoEndpoint>,
 }

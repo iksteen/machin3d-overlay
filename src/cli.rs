@@ -7,7 +7,7 @@ use crate::{
     auth::{default_token_path, load_token, save_token},
     bambu::{BambuClient, LoginResponse, API_BASE, MQTT_HOST},
     cloud::CloudSession,
-    local::{Endpoint, LocalEndpointArg, MqttEndpoint},
+    local::{Endpoint, LocalEndpointConfig, MqttEndpoint},
     monitor::{monitor_mqtt, MonitorConfig},
     server::{serve, ServerConfig, DEFAULT_HOST, DEFAULT_PORT},
     video::VideoEndpoint,
@@ -128,7 +128,7 @@ struct ServeArgs {
         help = "Printer LAN MQTT device; repeat for multiple printers. Port defaults to 8883. The device ID is inferred from the MQTT certificate. ACCESS_CODE can be provided here or looked up from /bind when needed",
         help_heading = "Local LAN"
     )]
-    local_devices: Vec<LocalEndpointArg>,
+    local_devices: Vec<LocalEndpointConfig>,
     #[arg(
         long = "video-device",
         value_name = "HOST[:PORT][,ACCESS_CODE]",
@@ -172,7 +172,7 @@ struct MqttArgs {
         help = "Printer LAN MQTT device; repeat for multiple printers. Port defaults to 8883. The device ID is inferred from the MQTT certificate. ACCESS_CODE can be provided here or looked up from /bind when needed",
         help_heading = "Local LAN"
     )]
-    local_devices: Vec<LocalEndpointArg>,
+    local_devices: Vec<LocalEndpointConfig>,
     #[arg(
         long = "device",
         value_name = "DEVICE_ID",
