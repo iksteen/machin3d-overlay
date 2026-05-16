@@ -61,6 +61,7 @@ fn mqtt_report_fixture_uses_known_report_fields() {
     assert_eq!(report.print.task_name.as_deref(), Some("Calibration cube"));
     assert_eq!(report.print.status.as_deref(), Some("RUNNING"));
     assert_eq!(report.print.progress, Some(25.0));
+    assert_eq!(report.print.file_prepare_percent, Some(100.0));
     assert_eq!(report.print.toolhead_temperature, Some(220.0));
     assert_eq!(report.print.bed_temperature, Some(60.0));
     assert_eq!(report.print.fan_speed, Some(40.0));

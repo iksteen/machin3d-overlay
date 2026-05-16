@@ -18,6 +18,7 @@
     "cooling_fan_speed": 40,
     "cost_time": 3600,
     "gcode_file": "calibration_cube.3mf",
+    "gcode_file_prepare_percent": "100",
     "gcode_start_time": "2026-05-11T00:00:00Z",
     "gcode_state": "RUNNING",
     "layer_num": 4,

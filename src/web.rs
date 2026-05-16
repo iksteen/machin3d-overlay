@@ -30,7 +30,7 @@ use crate::{
     local::{Endpoint, LocalEndpointArg, MqttEndpoint},
     mqtt::{start_local_supervisors, MqttRuntime},
     overlay::{error_payload, SnapshotService},
-    thumbnail::ThumbnailRuntime,
+    thumbnail::{ThumbnailRuntime, ThumbnailStatus},
     video::{mjpeg_content_type, VideoEndpoint, VideoRuntime},
 };
 
@@ -273,7 +273,7 @@ async fn thumbnail(State(state): State<AppState>, Query(query): Query<DeviceQuer
         .thumbnail(query.device.as_deref(), query.task.as_deref())
         .await
     {
-        Ok(Some(image)) => {
+        Ok(ThumbnailStatus::Ready(image)) => {
             let content_type = HeaderValue::from_str(&image.content_type)
                 .unwrap_or_else(|_| HeaderValue::from_static("application/octet-stream"));
             (
@@ -286,10 +286,21 @@ async fn thumbnail(State(state): State<AppState>, Query(query): Query<DeviceQuer
             )
                 .into_response()
         }
-        Ok(None) => (
+        Ok(ThumbnailStatus::Loading(message)) => (
+            StatusCode::ACCEPTED,
+            [
+                (header::CONTENT_TYPE, "text/plain; charset=utf-8"),
+                (header::CACHE_CONTROL, "no-store"),
+                (header::PRAGMA, "no-cache"),
+                (header::RETRY_AFTER, "2"),
+            ],
+            message,
+        )
+            .into_response(),
+        Ok(ThumbnailStatus::Missing(message)) => (
             StatusCode::NOT_FOUND,
             [(header::CONTENT_TYPE, "text/plain; charset=utf-8")],
-            "thumbnail is not available",
+            message,
         )
             .into_response(),
         Err(error) => (

@@ -61,6 +61,29 @@ body {
   line-height: 1;
 }
 
+.thumb.is-loading {
+  display: grid;
+  place-items: center;
+}
+
+.thumb.is-loading::before {
+  content: "";
+  width: 34%;
+  height: 34%;
+  min-width: 24px;
+  min-height: 24px;
+  border: 3px solid rgba(255, 255, 255, 0.22);
+  border-top-color: var(--accent);
+  border-radius: 50%;
+  animation: thumb-spin 820ms linear infinite;
+}
+
+@keyframes thumb-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
 .thumb img {
   position: absolute;
   inset: 0;

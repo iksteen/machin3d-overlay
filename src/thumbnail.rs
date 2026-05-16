@@ -1,17 +1,22 @@
 use std::{
     collections::HashMap,
-    io::{Cursor, Read},
+    io::{self, Cursor, Read, Seek},
     net::{SocketAddr, TcpStream, ToSocketAddrs},
     sync::Arc,
     time::{Duration, Instant},
 };
 
-use anyhow::{anyhow, bail, ensure, Context, Result};
+use anyhow::{bail, ensure, Context, Result};
 use bytes::Bytes;
-use flate2::read::DeflateDecoder;
+use quick_xml::{
+    events::{BytesStart, Event},
+    reader::Reader as XmlReader,
+    XmlVersion,
+};
 use suppaftp::{types::FileType, Mode, NativeTlsConnector, NativeTlsFtpStream};
 use tokio::sync::{Mutex, RwLock};
 use tracing::{debug, warn};
+use zip::{result::ZipError, ZipArchive};
 
 use crate::{
     bambu::{PrinterStatus, Task},
@@ -27,10 +32,30 @@ const FTP_TIMEOUT: Duration = Duration::from_secs(20);
 const MAX_3MF_SIZE: usize = 512 * 1024 * 1024;
 const MAX_THUMBNAIL_SIZE: usize = 32 * 1024 * 1024;
 const CLOUD_TASK_LIMIT: usize = 10;
+const LOADING_RETRY_DELAY: Duration = Duration::from_secs(2);
 const MISSING_RETRY_DELAY: Duration = Duration::from_secs(30);
-const ZIP_LOCAL_FILE_HEADER: u32 = 0x0403_4b50;
-const ZIP_CENTRAL_DIRECTORY_HEADER: u32 = 0x0201_4b50;
-const ZIP_END_OF_CENTRAL_DIRECTORY: u32 = 0x0605_4b50;
+const ROOT_RELS_PATH: &str = "_rels/.rels";
+const OPC_THUMBNAIL_REL: &str =
+    "http://schemas.openxmlformats.org/package/2006/relationships/metadata/thumbnail";
+const BAMBU_COVER_MIDDLE_REL: &str =
+    "http://schemas.bambulab.com/package/2021/cover-thumbnail-middle";
+const BAMBU_COVER_SMALL_REL: &str =
+    "http://schemas.bambulab.com/package/2021/cover-thumbnail-small";
+const THUMBNAIL_REL_PRIORITY: &[&str] = &[
+    OPC_THUMBNAIL_REL,
+    BAMBU_COVER_MIDDLE_REL,
+    BAMBU_COVER_SMALL_REL,
+];
+const FALLBACK_THUMBNAIL_NAMES: &[&str] = &[
+    "Metadata/thumbnail.png",
+    "Metadata/thumbnail.jpg",
+    "Metadata/thumbnail.jpeg",
+    "Metadata/thumbnail_small.png",
+    "Metadata/plate_1.png",
+    "Metadata/plate_1_small.png",
+    "Metadata/top_1.png",
+    "Metadata/pick_1.png",
+];
 
 #[derive(Clone)]
 pub(crate) struct ThumbnailRuntime {
@@ -46,6 +71,13 @@ struct ThumbnailInner {
 }
 
 #[derive(Debug, Clone)]
+pub(crate) enum ThumbnailStatus {
+    Ready(ThumbnailImage),
+    Loading(String),
+    Missing(String),
+}
+
+#[derive(Debug, Clone)]
 pub(crate) struct ThumbnailImage {
     pub(crate) content_type: String,
     pub(crate) bytes: Bytes,
@@ -54,15 +86,8 @@ pub(crate) struct ThumbnailImage {
 #[derive(Debug, Clone)]
 struct ThumbnailEntry {
     task: TaskKey,
-    request_task: Option<String>,
-    result: ThumbnailResult,
+    status: ThumbnailStatus,
     retry_after: Option<Instant>,
-}
-
-#[derive(Debug, Clone)]
-enum ThumbnailResult {
-    Ready(ThumbnailImage),
-    Missing(String),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -93,15 +118,14 @@ impl ThumbnailRuntime {
     pub(crate) async fn thumbnail(
         &self,
         requested_device_id: Option<&str>,
-        requested_task: Option<&str>,
-    ) -> Result<Option<ThumbnailImage>> {
+        _requested_task: Option<&str>,
+    ) -> Result<ThumbnailStatus> {
         let Some(device_id) = self.select_device_id(requested_device_id).await? else {
-            return Ok(None);
+            return Ok(ThumbnailStatus::Missing("no device selected".to_owned()));
         };
 
-        self.refresh_device(&device_id, normalized_request_task(requested_task))
-            .await?;
-        Ok(self.cached_image(&device_id).await)
+        self.refresh_device(&device_id).await?;
+        Ok(self.cached_status(&device_id).await)
     }
 
     async fn watch_task_changes(&self) {
@@ -127,10 +151,10 @@ impl ThumbnailRuntime {
                 self.clear_device(device_id).await;
                 continue;
             };
-            if self.cache_matches(device_id, &task, None).await {
+            if self.cache_matches(device_id, &task).await {
                 continue;
             }
-            if let Err(error) = self.fetch_and_cache(device_id, report, task, None).await {
+            if let Err(error) = self.fetch_and_cache(device_id, report, task).await {
                 warn!(
                     device_id,
                     error = %error_chain(&error),
@@ -140,7 +164,7 @@ impl ThumbnailRuntime {
         }
     }
 
-    async fn refresh_device(&self, device_id: &str, request_task: Option<String>) -> Result<()> {
+    async fn refresh_device(&self, device_id: &str) -> Result<()> {
         let reports = self.inner.mqtt.reports().await;
         let Some(report) = reports.get(device_id) else {
             self.clear_device(device_id).await;
@@ -150,14 +174,10 @@ impl ThumbnailRuntime {
             self.clear_device(device_id).await;
             return Ok(());
         };
-        if self
-            .cache_matches(device_id, &task, request_task.as_deref())
-            .await
-        {
+        if self.cache_matches(device_id, &task).await {
             return Ok(());
         }
-        self.fetch_and_cache(device_id, report, task, request_task)
-            .await
+        self.fetch_and_cache(device_id, report, task).await
     }
 
     async fn fetch_and_cache(
@@ -165,23 +185,30 @@ impl ThumbnailRuntime {
         device_id: &str,
         report: &PrinterStatus,
         task: TaskKey,
-        request_task: Option<String>,
     ) -> Result<()> {
         let fetch_lock = self.fetch_lock(device_id).await;
         let _guard = fetch_lock.lock().await;
 
-        if self
-            .cache_matches(device_id, &task, request_task.as_deref())
-            .await
-        {
+        if self.cache_matches(device_id, &task).await {
             return Ok(());
         }
 
-        let (result, retry_after) = match self.fetch_thumbnail(device_id, report).await {
-            Ok(image) => {
+        let (status, retry_after) = match self.fetch_thumbnail(device_id, report).await {
+            Ok(ThumbnailStatus::Ready(image)) => {
                 debug!(device_id, "cached print thumbnail");
-                (ThumbnailResult::Ready(image), None)
+                (ThumbnailStatus::Ready(image), None)
             }
+            Ok(ThumbnailStatus::Loading(message)) => {
+                debug!(device_id, message, "print thumbnail is not ready yet");
+                (
+                    ThumbnailStatus::Loading(message),
+                    Some(Instant::now() + LOADING_RETRY_DELAY),
+                )
+            }
+            Ok(ThumbnailStatus::Missing(message)) => (
+                ThumbnailStatus::Missing(message),
+                Some(Instant::now() + MISSING_RETRY_DELAY),
+            ),
             Err(error) => {
                 let message = error_chain(&error);
                 warn!(
@@ -190,7 +217,7 @@ impl ThumbnailRuntime {
                     "print thumbnail is unavailable"
                 );
                 (
-                    ThumbnailResult::Missing(message),
+                    ThumbnailStatus::Missing(message),
                     Some(Instant::now() + MISSING_RETRY_DELAY),
                 )
             }
@@ -200,8 +227,7 @@ impl ThumbnailRuntime {
             device_id.to_owned(),
             ThumbnailEntry {
                 task,
-                request_task,
-                result,
+                status,
                 retry_after,
             },
         );
@@ -212,7 +238,7 @@ impl ThumbnailRuntime {
         &self,
         device_id: &str,
         report: &PrinterStatus,
-    ) -> Result<ThumbnailImage> {
+    ) -> Result<ThumbnailStatus> {
         let device = self
             .inner
             .registry
@@ -221,7 +247,10 @@ impl ThumbnailRuntime {
             .with_context(|| format!("device `{device_id}` is not known"))?;
 
         match device.source {
-            DeviceSource::Cloud => self.fetch_cloud_thumbnail(device_id, report).await,
+            DeviceSource::Cloud => self
+                .fetch_cloud_thumbnail(device_id, report)
+                .await
+                .map(ThumbnailStatus::Ready),
             DeviceSource::Local => self.fetch_local_thumbnail(device_id, report).await,
         }
     }
@@ -271,24 +300,37 @@ impl ThumbnailRuntime {
         &self,
         device_id: &str,
         report: &PrinterStatus,
-    ) -> Result<ThumbnailImage> {
+    ) -> Result<ThumbnailStatus> {
         let local = self
             .inner
             .registry
             .get(device_id)
             .and_then(|entry| entry.local())
             .with_context(|| format!("device `{device_id}` does not have a local endpoint"))?;
+        if local_cloud_3mf_is_preparing(report) {
+            return Ok(ThumbnailStatus::Loading(local_cloud_3mf_prepare_message(
+                report,
+            )));
+        }
         let filename = report
             .filename
             .as_deref()
             .map(str::trim)
             .filter(|filename| !filename.is_empty())
             .context("MQTT report does not include gcode_file for local thumbnail lookup")?;
-        fetch_local_3mf_thumbnail(local, filename, report.print_type.as_deref())
-            .await
-            .with_context(|| {
+        match fetch_local_3mf_thumbnail(local, filename, report.print_type.as_deref()).await {
+            Ok(image) => Ok(ThumbnailStatus::Ready(image)),
+            Err(error) if local_cloud_3mf_may_still_be_preparing(report, &error) => {
+                Ok(ThumbnailStatus::Loading(format!(
+                    "{}: {}",
+                    local_cloud_3mf_prepare_message(report),
+                    error_chain(&error)
+                )))
+            }
+            Err(error) => Err(error).with_context(|| {
                 format!("failed to fetch thumbnail from `{filename}` on local device `{device_id}`")
-            })
+            }),
+        }
     }
 
     async fn select_device_id(&self, requested_device_id: Option<&str>) -> Result<Option<String>> {
@@ -310,24 +352,23 @@ impl ThumbnailRuntime {
             .map(|entry| entry.id().to_owned()))
     }
 
-    async fn cached_image(&self, device_id: &str) -> Option<ThumbnailImage> {
+    async fn cached_status(&self, device_id: &str) -> ThumbnailStatus {
         let cache = self.inner.cache.read().await;
-        match cache.get(device_id).map(|entry| &entry.result) {
-            Some(ThumbnailResult::Ready(image)) => Some(image.clone()),
-            Some(ThumbnailResult::Missing(error)) => {
-                debug!(device_id, error, "thumbnail is unavailable");
-                None
+        match cache.get(device_id).map(|entry| &entry.status) {
+            Some(status @ ThumbnailStatus::Ready(_)) => status.clone(),
+            Some(status @ ThumbnailStatus::Loading(error)) => {
+                debug!(device_id, error, "thumbnail is loading");
+                status.clone()
             }
-            None => None,
+            Some(status @ ThumbnailStatus::Missing(error)) => {
+                debug!(device_id, error, "thumbnail is unavailable");
+                status.clone()
+            }
+            None => ThumbnailStatus::Missing("thumbnail is not available".to_owned()),
         }
     }
 
-    async fn cache_matches(
-        &self,
-        device_id: &str,
-        task: &TaskKey,
-        request_task: Option<&str>,
-    ) -> bool {
+    async fn cache_matches(&self, device_id: &str, task: &TaskKey) -> bool {
         let cache = self.inner.cache.read().await;
         let Some(entry) = cache.get(device_id) else {
             return false;
@@ -335,18 +376,11 @@ impl ThumbnailRuntime {
         if entry.task != *task {
             return false;
         }
-        match entry.result {
-            ThumbnailResult::Ready(_) => true,
-            ThumbnailResult::Missing(_) => {
-                if let Some(request_task) = request_task {
-                    if entry.request_task.as_deref() != Some(request_task) {
-                        return false;
-                    }
-                }
-                entry
-                    .retry_after
-                    .is_some_and(|retry_after| retry_after > Instant::now())
-            }
+        match entry.status {
+            ThumbnailStatus::Ready(_) => true,
+            ThumbnailStatus::Loading(_) | ThumbnailStatus::Missing(_) => entry
+                .retry_after
+                .is_some_and(|retry_after| retry_after > Instant::now()),
         }
     }
 
@@ -420,6 +454,43 @@ fn select_cloud_task<'a>(tasks: &'a [Task], report: &PrinterStatus) -> Option<&'
     None
 }
 
+fn local_cloud_3mf_is_preparing(report: &PrinterStatus) -> bool {
+    is_cloud_print(report)
+        && report
+            .file_prepare_percent
+            .is_some_and(|percent| percent < 100.0)
+}
+
+fn local_cloud_3mf_prepare_message(report: &PrinterStatus) -> String {
+    match report.file_prepare_percent {
+        Some(percent) => format!("printer is still preparing cloud 3MF ({percent:.0}%)"),
+        None => "printer may still be preparing cloud 3MF".to_owned(),
+    }
+}
+
+fn local_cloud_3mf_may_still_be_preparing(report: &PrinterStatus, error: &anyhow::Error) -> bool {
+    is_cloud_print(report) && is_incomplete_3mf_error(error)
+}
+
+fn is_cloud_print(report: &PrinterStatus) -> bool {
+    report
+        .print_type
+        .as_deref()
+        .map(str::trim)
+        .is_some_and(|print_type| print_type.eq_ignore_ascii_case("cloud"))
+}
+
+fn is_incomplete_3mf_error(error: &anyhow::Error) -> bool {
+    error.chain().any(|cause| {
+        cause
+            .downcast_ref::<ZipError>()
+            .is_some_and(|error| matches!(error, ZipError::InvalidArchive(_) | ZipError::Io(_)))
+            || cause
+                .downcast_ref::<io::Error>()
+                .is_some_and(|error| error.kind() == io::ErrorKind::UnexpectedEof)
+    })
+}
+
 async fn fetch_local_3mf_thumbnail(
     device: &LocalDevice,
     filename: &str,
@@ -456,16 +527,25 @@ fn fetch_local_3mf_thumbnail_with_mode(
     candidates: &[String],
     mode: Mode,
 ) -> Result<ThumbnailImage> {
-    let mut last_error = None;
+    let mut errors = Vec::new();
     for path in candidates {
         match retrieve_thumbnail_from_candidate(device, mode, path) {
             Ok(image) => return Ok(image),
             Err(error) => {
-                last_error = Some(error);
+                let message = error_chain(&error);
+                debug!(
+                    path,
+                    error = %message,
+                    "local FTPS thumbnail candidate failed"
+                );
+                errors.push(format!("`{path}`: {message}"));
             }
         }
     }
-    Err(last_error.unwrap_or_else(|| anyhow!("no local file candidates were generated")))
+    bail!(
+        "all local FTPS thumbnail candidates failed: {}",
+        errors.join("; ")
+    )
 }
 
 fn retrieve_thumbnail_from_candidate(
@@ -535,12 +615,13 @@ fn retrieve_thumbnail(client: &mut NativeTlsFtpStream, path: &str) -> Result<Thu
     let mut stream = client
         .retr_as_stream(path)
         .with_context(|| format!("local FTPS RETR `{path}` failed"))?;
-    // Intentionally stop reading once the thumbnail entry has been parsed. Finalizing
-    // the RETR stream waits for the rest of the 3MF payload and defeats incremental use.
-    let image = extract_bambu_3mf_thumbnail_stream(&mut stream)
-        .with_context(|| format!("failed to stream thumbnail from local 3MF `{path}`"))?;
-    drop(stream);
-    Ok(image)
+    let archive = read_limited(&mut stream, MAX_3MF_SIZE, "local 3MF download")
+        .with_context(|| format!("failed to download local 3MF `{path}`"))?;
+    client
+        .finalize_retr_stream(stream)
+        .with_context(|| format!("failed to finalize local FTPS RETR `{path}`"))?;
+    extract_bambu_3mf_thumbnail_archive(archive)
+        .with_context(|| format!("failed to read thumbnail from local 3MF `{path}`"))
 }
 
 fn local_ftps_address(device: &LocalDevice) -> String {
@@ -559,129 +640,154 @@ fn resolve_socket_addr(address: &str) -> Result<SocketAddr> {
         .with_context(|| format!("local FTPS address `{address}` did not resolve"))
 }
 
-// Streaming extraction intentionally supports the ZIP subset emitted by Bambu 3MF files.
-// It reads local file headers in order and stops as soon as a supported thumbnail is found.
-fn extract_bambu_3mf_thumbnail_stream(reader: &mut dyn Read) -> Result<ThumbnailImage> {
-    let mut scanned = 0_usize;
-    loop {
-        let signature = read_u32_le(reader).context("failed to read zip entry signature")?;
-        scanned += 4;
-        match signature {
-            ZIP_LOCAL_FILE_HEADER => {
-                let entry = read_zip_entry_header(reader)?;
-                scanned = checked_add(scanned, 26 + entry.name.len() + entry.extra_len)?;
-                if is_supported_thumbnail_entry(&entry.name) {
-                    let bytes = read_zip_entry_data(reader, &entry).with_context(|| {
-                        format!("failed to read thumbnail entry `{}`", entry.name)
-                    })?;
-                    debug!(
-                        entry = %entry.name,
-                        scanned,
-                        size = bytes.len(),
-                        "streamed thumbnail from local 3MF"
-                    );
-                    return Ok(ThumbnailImage {
-                        content_type: image_content_type(path_content_type(&entry.name), &bytes),
-                        bytes: Bytes::from(bytes),
-                    });
+fn extract_bambu_3mf_thumbnail_archive(archive: Vec<u8>) -> Result<ThumbnailImage> {
+    let mut archive =
+        ZipArchive::new(Cursor::new(archive)).context("failed to read local 3MF as ZIP archive")?;
+    let thumbnail = select_thumbnail_entry(&mut archive)?
+        .context("3MF did not include a supported thumbnail image")?;
+    read_thumbnail_entry(&mut archive, &thumbnail)
+}
+
+fn select_thumbnail_entry<R: Read + Seek>(archive: &mut ZipArchive<R>) -> Result<Option<String>> {
+    // 3MF stores the authoritative package thumbnail in the root relationship
+    // file. Only fall back to file-name heuristics when that relationship is
+    // absent, and keep those fallbacks explicitly ordered.
+    if let Some(relationships) = read_archive_string(archive, ROOT_RELS_PATH)? {
+        let relationships = parse_thumbnail_relationships(&relationships)?;
+        for rel_type in THUMBNAIL_REL_PRIORITY {
+            for relationship in relationships
+                .iter()
+                .filter(|relationship| relationship.rel_type == *rel_type)
+            {
+                let Some(target) = normalize_archive_path(&relationship.target) else {
+                    continue;
+                };
+                if is_supported_thumbnail_entry(&target)
+                    && archive.index_for_name(&target).is_some()
+                {
+                    return Ok(Some(target));
                 }
-                skip_exact(reader, entry.compressed_size)
-                    .with_context(|| format!("failed to skip zip entry `{}`", entry.name))?;
-                scanned = checked_add(scanned, entry.compressed_size)?;
             }
-            ZIP_CENTRAL_DIRECTORY_HEADER | ZIP_END_OF_CENTRAL_DIRECTORY => {
-                bail!(
-                    "3MF did not include a supported thumbnail image before the central directory"
-                )
-            }
-            other => bail!("unexpected zip entry signature 0x{other:08x}"),
-        }
-        ensure!(
-            scanned <= MAX_3MF_SIZE,
-            "local 3MF exceeds maximum supported scan size of {MAX_3MF_SIZE} bytes"
-        );
-    }
-}
-
-#[derive(Debug)]
-struct ZipEntryHeader {
-    name: String,
-    compression: u16,
-    flags: u16,
-    compressed_size: usize,
-    extra_len: usize,
-}
-
-fn read_zip_entry_header(reader: &mut dyn Read) -> Result<ZipEntryHeader> {
-    let mut fixed = [0_u8; 26];
-    reader
-        .read_exact(&mut fixed)
-        .context("failed to read zip local file header")?;
-    let flags = u16::from_le_bytes([fixed[2], fixed[3]]);
-    let compression = u16::from_le_bytes([fixed[4], fixed[5]]);
-    let compressed_size = u32::from_le_bytes([fixed[14], fixed[15], fixed[16], fixed[17]]);
-    let uncompressed_size = u32::from_le_bytes([fixed[18], fixed[19], fixed[20], fixed[21]]);
-    let name_len = u16::from_le_bytes([fixed[22], fixed[23]]) as usize;
-    let extra_len = u16::from_le_bytes([fixed[24], fixed[25]]) as usize;
-    let name = read_exact_vec(reader, name_len, "zip entry name")?;
-    let extra = read_exact_vec(reader, extra_len, "zip entry extra fields")?;
-    let mut compressed_size = compressed_size as u64;
-    if compressed_size == u32::MAX as u64 || uncompressed_size == u32::MAX {
-        if let Some(zip64_compressed_size) = zip64_compressed_size(
-            &extra,
-            uncompressed_size == u32::MAX,
-            compressed_size == u32::MAX as u64,
-        )? {
-            compressed_size = zip64_compressed_size;
         }
     }
+
+    for name in FALLBACK_THUMBNAIL_NAMES {
+        if archive.index_for_name(name).is_some() {
+            return Ok(Some((*name).to_owned()));
+        }
+    }
+
+    let mut names = archive
+        .file_names()
+        .filter(|name| is_supported_thumbnail_entry(name))
+        .map(ToOwned::to_owned)
+        .collect::<Vec<_>>();
+    names.sort_unstable();
+    Ok(names.into_iter().next())
+}
+
+fn read_thumbnail_entry<R: Read + Seek>(
+    archive: &mut ZipArchive<R>,
+    name: &str,
+) -> Result<ThumbnailImage> {
+    let mut file = archive
+        .by_name(name)
+        .with_context(|| format!("failed to open thumbnail entry `{name}`"))?;
     ensure!(
-        flags & 0x0008 == 0,
-        "zip entry uses a data descriptor before a thumbnail was found"
+        file.size() <= MAX_THUMBNAIL_SIZE as u64,
+        "thumbnail entry `{name}` exceeds maximum supported size of {MAX_THUMBNAIL_SIZE} bytes"
     );
-    ensure!(
-        compressed_size <= MAX_3MF_SIZE as u64,
-        "zip entry exceeds maximum supported size of {MAX_3MF_SIZE} bytes"
+    let bytes = read_limited(&mut file, MAX_THUMBNAIL_SIZE, "thumbnail entry data")
+        .with_context(|| format!("failed to read thumbnail entry `{name}`"))?;
+    ensure!(!bytes.is_empty(), "thumbnail entry `{name}` is empty");
+    debug!(
+        entry = %name,
+        size = bytes.len(),
+        "loaded thumbnail from local 3MF"
     );
-    let name = String::from_utf8_lossy(&name).replace('\\', "/");
-    Ok(ZipEntryHeader {
-        name,
-        compression,
-        flags,
-        compressed_size: compressed_size as usize,
-        extra_len,
+    Ok(ThumbnailImage {
+        content_type: image_content_type(path_content_type(name), &bytes),
+        bytes: Bytes::from(bytes),
     })
 }
 
-fn read_zip_entry_data(reader: &mut dyn Read, entry: &ZipEntryHeader) -> Result<Vec<u8>> {
-    ensure!(entry.flags & 0x0001 == 0, "zip entry is encrypted");
-    ensure!(
-        entry.compressed_size <= MAX_THUMBNAIL_SIZE,
-        "thumbnail entry exceeds maximum supported size of {MAX_THUMBNAIL_SIZE} bytes"
-    );
-    let data = read_exact_vec(reader, entry.compressed_size, "thumbnail entry data")?;
-    let bytes = match entry.compression {
-        0 => data,
-        8 => {
-            let mut decoder = DeflateDecoder::new(Cursor::new(data));
-            read_limited(&mut decoder, MAX_THUMBNAIL_SIZE, "deflated thumbnail entry")?
+fn read_archive_string<R: Read + Seek>(
+    archive: &mut ZipArchive<R>,
+    name: &str,
+) -> Result<Option<String>> {
+    let mut file = match archive.by_name(name) {
+        Ok(file) => file,
+        Err(ZipError::FileNotFound) => return Ok(None),
+        Err(error) => {
+            return Err(error).with_context(|| format!("failed to open archive entry `{name}`"))
         }
-        other => bail!("thumbnail entry uses unsupported zip compression method {other}"),
     };
-    ensure!(
-        !bytes.is_empty(),
-        "thumbnail entry `{}` is empty",
-        entry.name
-    );
-    Ok(bytes)
+    let mut text = String::new();
+    file.read_to_string(&mut text)
+        .with_context(|| format!("failed to read archive entry `{name}`"))?;
+    Ok(Some(text))
 }
 
-fn read_exact_vec(reader: &mut dyn Read, len: usize, label: &str) -> Result<Vec<u8>> {
-    let mut bytes = vec![0_u8; len];
-    reader
-        .read_exact(&mut bytes)
-        .with_context(|| format!("failed to read {label}"))?;
-    Ok(bytes)
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ThumbnailRelationship {
+    rel_type: String,
+    target: String,
+}
+
+fn parse_thumbnail_relationships(xml: &str) -> Result<Vec<ThumbnailRelationship>> {
+    let mut reader = XmlReader::from_str(xml);
+    reader.config_mut().trim_text(true);
+    let mut relationships = Vec::new();
+    loop {
+        match reader
+            .read_event()
+            .context("failed to parse 3MF relationships")?
+        {
+            Event::Empty(element) | Event::Start(element) => {
+                if element.local_name().as_ref() == b"Relationship" {
+                    if let Some(relationship) = parse_thumbnail_relationship(&reader, &element)? {
+                        relationships.push(relationship);
+                    }
+                }
+            }
+            Event::Eof => break,
+            _ => {}
+        }
+    }
+    Ok(relationships)
+}
+
+fn parse_thumbnail_relationship(
+    reader: &XmlReader<&[u8]>,
+    element: &BytesStart<'_>,
+) -> Result<Option<ThumbnailRelationship>> {
+    let mut rel_type = None;
+    let mut target = None;
+    for attribute in element.attributes().with_checks(false) {
+        let attribute = attribute.context("failed to parse 3MF relationship attribute")?;
+        let value = attribute
+            .decoded_and_normalized_value(XmlVersion::Implicit1_0, reader.decoder())
+            .context("failed to decode 3MF relationship attribute")?
+            .into_owned();
+        match attribute.key.as_ref() {
+            b"Type" => rel_type = Some(value),
+            b"Target" => target = Some(value),
+            _ => {}
+        }
+    }
+    Ok(match (rel_type, target) {
+        (Some(rel_type), Some(target)) => Some(ThumbnailRelationship { rel_type, target }),
+        _ => None,
+    })
+}
+
+fn normalize_archive_path(path: &str) -> Option<String> {
+    let path = path.trim().replace('\\', "/");
+    let path = path.trim_start_matches('/');
+    if path.is_empty() || path.contains('\0') || path.split('/').any(|part| part == "..") {
+        return None;
+    }
+    Some(path.to_owned())
 }
 
 fn read_limited(reader: &mut dyn Read, limit: usize, label: &str) -> Result<Vec<u8>> {
@@ -695,69 +801,12 @@ fn read_limited(reader: &mut dyn Read, limit: usize, label: &str) -> Result<Vec<
             break;
         }
         ensure!(
-            bytes.len() + read <= limit,
+            bytes.len().saturating_add(read) <= limit,
             "{label} exceeds maximum supported size of {limit} bytes"
         );
         bytes.extend_from_slice(&buffer[..read]);
     }
     Ok(bytes)
-}
-
-fn skip_exact(reader: &mut dyn Read, len: usize) -> Result<()> {
-    let mut remaining = len;
-    let mut buffer = [0_u8; 64 * 1024];
-    while remaining > 0 {
-        let read_len = remaining.min(buffer.len());
-        reader
-            .read_exact(&mut buffer[..read_len])
-            .context("failed to skip zip entry data")?;
-        remaining -= read_len;
-    }
-    Ok(())
-}
-
-fn read_u32_le(reader: &mut dyn Read) -> Result<u32> {
-    let mut bytes = [0_u8; 4];
-    reader.read_exact(&mut bytes)?;
-    Ok(u32::from_le_bytes(bytes))
-}
-
-fn zip64_compressed_size(
-    extra: &[u8],
-    has_uncompressed_size: bool,
-    has_compressed_size: bool,
-) -> Result<Option<u64>> {
-    let mut cursor = 0;
-    while cursor + 4 <= extra.len() {
-        let tag = u16::from_le_bytes([extra[cursor], extra[cursor + 1]]);
-        let len = u16::from_le_bytes([extra[cursor + 2], extra[cursor + 3]]) as usize;
-        cursor += 4;
-        ensure!(cursor + len <= extra.len(), "zip extra field is truncated");
-        if tag == 0x0001 {
-            let field = &extra[cursor..cursor + len];
-            let mut offset = 0;
-            if has_uncompressed_size {
-                ensure!(offset + 8 <= field.len(), "zip64 extra field is truncated");
-                offset += 8;
-            }
-            if has_compressed_size {
-                ensure!(offset + 8 <= field.len(), "zip64 extra field is truncated");
-                return Ok(Some(u64::from_le_bytes(
-                    field[offset..offset + 8]
-                        .try_into()
-                        .expect("zip64 size slice"),
-                )));
-            }
-            return Ok(None);
-        }
-        cursor += len;
-    }
-    Ok(None)
-}
-
-fn checked_add(left: usize, right: usize) -> Result<usize> {
-    left.checked_add(right)
-        .context("local 3MF scan size overflowed")
 }
 
 fn is_supported_thumbnail_entry(name: &str) -> bool {
@@ -798,9 +847,11 @@ fn local_file_candidates(filename: &str, print_type: Option<&str>) -> Vec<String
 
     let relative = filename.trim_start_matches('/');
     let mut candidates = Vec::new();
-    if relative.starts_with("cache/") || relative.starts_with("sdcard/") {
+    if filename.starts_with('/')
+        || relative.starts_with("cache/")
+        || relative.starts_with("sdcard/")
+    {
         push_unique(&mut candidates, format!("/{relative}"));
-        push_unique(&mut candidates, relative.to_owned());
     } else {
         match print_type_root(print_type) {
             Some(root) => push_unique(&mut candidates, format!("{root}/{relative}")),
@@ -808,10 +859,6 @@ fn local_file_candidates(filename: &str, print_type: Option<&str>) -> Vec<String
                 push_unique(&mut candidates, format!("/cache/{relative}"));
                 push_unique(&mut candidates, format!("/sdcard/{relative}"));
             }
-        }
-        push_unique(&mut candidates, relative.to_owned());
-        if filename.starts_with('/') {
-            push_unique(&mut candidates, format!("/{relative}"));
         }
     }
     candidates
@@ -865,10 +912,6 @@ fn trimmed(value: Option<&str>) -> Option<&str> {
     value.map(str::trim).filter(|value| !value.is_empty())
 }
 
-fn normalized_request_task(value: Option<&str>) -> Option<String> {
-    trimmed(value).map(str::to_owned)
-}
-
 fn error_chain(error: &anyhow::Error) -> String {
     error
         .chain()
@@ -879,11 +922,23 @@ fn error_chain(error: &anyhow::Error) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{
-        extract_bambu_3mf_thumbnail_stream, is_supported_thumbnail_entry, local_file_candidates,
-        select_cloud_task, TaskKey, ZIP_LOCAL_FILE_HEADER,
+    use std::{
+        io::{Cursor, Write},
+        time::{Duration, Instant},
     };
-    use crate::bambu::{PrinterStatus, Task};
+
+    use super::{
+        extract_bambu_3mf_thumbnail_archive, is_supported_thumbnail_entry,
+        local_cloud_3mf_is_preparing, local_cloud_3mf_may_still_be_preparing,
+        local_file_candidates, select_cloud_task, TaskKey, ThumbnailEntry, ThumbnailRuntime,
+        ThumbnailStatus, BAMBU_COVER_MIDDLE_REL, OPC_THUMBNAIL_REL,
+    };
+    use crate::{
+        bambu::{CloudDevice, PrinterStatus, Task},
+        devices::DeviceRegistry,
+        mqtt::MqttRuntime,
+    };
+    use zip::{result::ZipError, write::SimpleFileOptions, CompressionMethod, ZipWriter};
 
     #[test]
     fn task_key_tracks_the_active_print_identity() {
@@ -897,6 +952,76 @@ mod tests {
 
         assert!(TaskKey::from_report(&report).is_some());
         assert_eq!(TaskKey::from_report(&PrinterStatus::default()), None);
+    }
+
+    #[tokio::test]
+    async fn missing_thumbnail_cache_throttles_until_retry_time() {
+        let runtime = ThumbnailRuntime::new(
+            MqttRuntime::new(),
+            None,
+            DeviceRegistry::new(
+                vec![CloudDevice {
+                    id: Some("printer-a".to_owned()),
+                    ..CloudDevice::default()
+                }],
+                Vec::new(),
+            ),
+        );
+        let task = TaskKey("task".to_owned());
+        runtime.inner.cache.write().await.insert(
+            "printer-a".to_owned(),
+            ThumbnailEntry {
+                task: task.clone(),
+                status: ThumbnailStatus::Missing("missing".to_owned()),
+                retry_after: Some(Instant::now() + Duration::from_secs(30)),
+            },
+        );
+
+        assert!(runtime.cache_matches("printer-a", &task).await);
+    }
+
+    #[test]
+    fn local_cloud_3mf_prepare_percent_defers_thumbnail_fetch() {
+        let report = PrinterStatus {
+            print_type: Some("cloud".to_owned()),
+            file_prepare_percent: Some(99.0),
+            ..PrinterStatus::default()
+        };
+        assert!(local_cloud_3mf_is_preparing(&report));
+
+        let report = PrinterStatus {
+            print_type: Some("cloud".to_owned()),
+            file_prepare_percent: Some(100.0),
+            ..PrinterStatus::default()
+        };
+        assert!(!local_cloud_3mf_is_preparing(&report));
+
+        let report = PrinterStatus {
+            print_type: Some("local".to_owned()),
+            file_prepare_percent: Some(99.0),
+            ..PrinterStatus::default()
+        };
+        assert!(!local_cloud_3mf_is_preparing(&report));
+    }
+
+    #[test]
+    fn invalid_cloud_3mf_is_treated_as_still_preparing() {
+        let error = anyhow::Error::new(ZipError::InvalidArchive(
+            "could not find central directory".into(),
+        ));
+        let report = PrinterStatus {
+            print_type: Some("cloud".to_owned()),
+            file_prepare_percent: Some(100.0),
+            ..PrinterStatus::default()
+        };
+        assert!(local_cloud_3mf_may_still_be_preparing(&report, &error));
+
+        let report = PrinterStatus {
+            print_type: Some("local".to_owned()),
+            file_prepare_percent: Some(100.0),
+            ..PrinterStatus::default()
+        };
+        assert!(!local_cloud_3mf_may_still_be_preparing(&report, &error));
     }
 
     #[test]
@@ -960,37 +1085,37 @@ mod tests {
     fn local_file_candidates_try_print_cache_first() {
         assert_eq!(
             local_file_candidates("cube.3mf", None),
-            vec!["/cache/cube.3mf", "/sdcard/cube.3mf", "cube.3mf"]
+            vec!["/cache/cube.3mf", "/sdcard/cube.3mf"]
         );
         assert_eq!(
             local_file_candidates("cube.3mf", Some("cloud")),
-            vec!["/cache/cube.3mf", "cube.3mf"]
+            vec!["/cache/cube.3mf"]
         );
         assert_eq!(
             local_file_candidates("cube.3mf", Some("local")),
-            vec!["/sdcard/cube.3mf", "cube.3mf"]
+            vec!["/sdcard/cube.3mf"]
         );
         assert_eq!(
             local_file_candidates("/sdcard/cube.3mf", Some("cloud")),
-            vec!["/sdcard/cube.3mf", "sdcard/cube.3mf"]
+            vec!["/sdcard/cube.3mf"]
         );
         assert_eq!(
             local_file_candidates("/cache/cube.3mf", Some("local")),
-            vec!["/cache/cube.3mf", "cache/cube.3mf"]
+            vec!["/cache/cube.3mf"]
         );
     }
 
     #[test]
-    fn streamed_3mf_thumbnail_reads_first_thumbnail_entry() {
+    fn archive_thumbnail_uses_root_thumbnail_relationship() {
         let thumbnail = b"\x89PNG\r\n\x1a\nthumbnail";
-        let mut archive = Vec::new();
-        archive.extend(stored_zip_entry(
-            "Metadata/model_settings.config",
-            b"settings",
-        ));
-        archive.extend(stored_zip_entry("Metadata/thumbnail.png", thumbnail));
+        let relationships = relationship_xml(&[(OPC_THUMBNAIL_REL, "/Metadata/plate_1.png")]);
+        let archive = make_archive(&[
+            ("_rels/.rels", relationships.as_bytes()),
+            ("Metadata/pick_1.png", b"wrong"),
+            ("Metadata/plate_1.png", thumbnail),
+        ]);
 
-        let image = extract_bambu_3mf_thumbnail_stream(&mut archive.as_slice()).unwrap();
+        let image = extract_bambu_3mf_thumbnail_archive(archive).unwrap();
 
         assert_eq!(image.content_type, "image/png");
         assert_eq!(image.bytes.as_ref(), thumbnail);
@@ -1005,39 +1130,65 @@ mod tests {
     }
 
     #[test]
-    fn bambu_3mf_streaming_subset_rejects_data_descriptors() {
-        let mut archive = Vec::new();
-        archive.extend(stored_zip_entry_with_flags(
-            "Metadata/model_settings.config",
-            b"settings",
-            0x0008,
-        ));
-        archive.extend(stored_zip_entry("Metadata/thumbnail.png", b"thumbnail"));
+    fn archive_thumbnail_uses_bambu_middle_relationship() {
+        let thumbnail = b"\x89PNG\r\n\x1a\nthumbnail";
+        let relationships = relationship_xml(&[(BAMBU_COVER_MIDDLE_REL, "/Metadata/plate_2.png")]);
+        let archive = make_archive(&[
+            ("_rels/.rels", relationships.as_bytes()),
+            ("Metadata/plate_1.png", b"wrong"),
+            ("Metadata/plate_2.png", thumbnail),
+        ]);
 
-        let error = extract_bambu_3mf_thumbnail_stream(&mut archive.as_slice()).unwrap_err();
+        let image = extract_bambu_3mf_thumbnail_archive(archive).unwrap();
 
-        assert!(error.to_string().contains("data descriptor"));
+        assert_eq!(image.content_type, "image/png");
+        assert_eq!(image.bytes.as_ref(), thumbnail);
     }
 
-    fn stored_zip_entry(name: &str, data: &[u8]) -> Vec<u8> {
-        stored_zip_entry_with_flags(name, data, 0)
+    #[test]
+    fn archive_thumbnail_falls_back_by_explicit_priority() {
+        let thumbnail = b"\x89PNG\r\n\x1a\nthumbnail";
+        let archive = make_archive(&[
+            ("Metadata/top_1.png", b"wrong"),
+            ("Metadata/plate_1.png", thumbnail),
+        ]);
+
+        let image = extract_bambu_3mf_thumbnail_archive(archive).unwrap();
+
+        assert_eq!(image.content_type, "image/png");
+        assert_eq!(image.bytes.as_ref(), thumbnail.as_slice());
     }
 
-    fn stored_zip_entry_with_flags(name: &str, data: &[u8], flags: u16) -> Vec<u8> {
-        let mut entry = Vec::new();
-        entry.extend(ZIP_LOCAL_FILE_HEADER.to_le_bytes());
-        entry.extend(20_u16.to_le_bytes());
-        entry.extend(flags.to_le_bytes());
-        entry.extend(0_u16.to_le_bytes());
-        entry.extend(0_u16.to_le_bytes());
-        entry.extend(0_u16.to_le_bytes());
-        entry.extend(0_u32.to_le_bytes());
-        entry.extend((data.len() as u32).to_le_bytes());
-        entry.extend((data.len() as u32).to_le_bytes());
-        entry.extend((name.len() as u16).to_le_bytes());
-        entry.extend(0_u16.to_le_bytes());
-        entry.extend(name.as_bytes());
-        entry.extend(data);
-        entry
+    #[test]
+    fn archive_thumbnail_falls_back_to_sorted_supported_entries() {
+        let archive = make_archive(&[("z/cover.png", b"wrong"), ("a/cover.png", b"right")]);
+
+        let image = extract_bambu_3mf_thumbnail_archive(archive).unwrap();
+
+        assert_eq!(image.bytes.as_ref(), b"right");
+    }
+
+    fn relationship_xml(relationships: &[(&str, &str)]) -> String {
+        let mut xml = String::from(
+            r#"<?xml version="1.0" encoding="UTF-8"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">"#,
+        );
+        for (rel_type, target) in relationships {
+            xml.push_str(&format!(
+                r#"<Relationship Target="{target}" Id="rel" Type="{rel_type}"/>"#
+            ));
+        }
+        xml.push_str("</Relationships>");
+        xml
+    }
+
+    fn make_archive(entries: &[(&str, &[u8])]) -> Vec<u8> {
+        let cursor = Cursor::new(Vec::new());
+        let mut writer = ZipWriter::new(cursor);
+        let options = SimpleFileOptions::default().compression_method(CompressionMethod::Stored);
+        for (name, data) in entries {
+            writer.start_file(*name, options).unwrap();
+            writer.write_all(data).unwrap();
+        }
+        writer.finish().unwrap().into_inner()
     }
 }

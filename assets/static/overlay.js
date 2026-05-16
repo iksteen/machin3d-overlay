@@ -20,6 +20,8 @@
     thumbSlot: document.getElementById("thumbSlot"),
     thumbUrl: null,
     thumbPendingUrl: null,
+    thumbRetryTimer: null,
+    thumbObjectUrl: null,
     thumbRequest: 0,
     events: null,
     spoolIconId: 0,
@@ -128,34 +130,109 @@
     node.replaceChildren(...items.map(spoolElement));
   }
 
-  function renderThumb(url) {
-    if (url === state.thumbUrl || url === state.thumbPendingUrl) {
+  function clearThumbRetry() {
+    if (state.thumbRetryTimer != null) {
+      window.clearTimeout(state.thumbRetryTimer);
+      state.thumbRetryTimer = null;
+    }
+  }
+
+  function revokeThumbObjectUrl() {
+    if (state.thumbObjectUrl) {
+      URL.revokeObjectURL(state.thumbObjectUrl);
+      state.thumbObjectUrl = null;
+    }
+  }
+
+  function setThumbLoading() {
+    revokeThumbObjectUrl();
+    state.thumbSlot.replaceChildren();
+    state.thumbSlot.className = "thumb";
+    state.thumbSlot.classList.add("is-loading");
+    state.thumbSlot.removeAttribute("aria-label");
+    state.thumbSlot.setAttribute("aria-busy", "true");
+  }
+
+  function setThumbEmpty() {
+    revokeThumbObjectUrl();
+    state.thumbSlot.replaceChildren();
+    state.thumbSlot.className = "thumb";
+    state.thumbSlot.classList.add("is-empty");
+    state.thumbSlot.textContent = "3D";
+    state.thumbSlot.removeAttribute("aria-busy");
+    state.thumbSlot.setAttribute("aria-label", "No print thumbnail available");
+  }
+
+  function retryDelay(response) {
+    const seconds = Number(response.headers.get("retry-after"));
+    if (Number.isFinite(seconds) && seconds > 0) {
+      return Math.min(seconds * 1000, 10000);
+    }
+    return 2000;
+  }
+
+  function renderThumb(url, force = false) {
+    if (!force && (url === state.thumbUrl || url === state.thumbPendingUrl)) {
       return;
     }
 
+    clearThumbRetry();
     const requestId = ++state.thumbRequest;
     state.thumbPendingUrl = url || null;
 
     if (!url) {
       state.thumbUrl = null;
       state.thumbPendingUrl = null;
-      state.thumbSlot.replaceChildren();
-      state.thumbSlot.className = "thumb";
-      state.thumbSlot.classList.add("is-empty");
-      state.thumbSlot.textContent = "3D";
+      setThumbEmpty();
       return;
     }
 
+    setThumbLoading();
+    fetch(url, { cache: "no-store" })
+      .then((response) => {
+        if (requestId !== state.thumbRequest || state.thumbPendingUrl !== url) {
+          return null;
+        }
+        if (response.status === 202) {
+          state.thumbRetryTimer = window.setTimeout(() => renderThumb(url, true), retryDelay(response));
+          return null;
+        }
+        if (!response.ok) {
+          throw new Error(`thumbnail request returned HTTP ${response.status}`);
+        }
+        return response.blob();
+      })
+      .then((blob) => {
+        if (!blob || requestId !== state.thumbRequest || state.thumbPendingUrl !== url) {
+          return;
+        }
+        renderThumbBlob(url, blob, requestId);
+      })
+      .catch(() => {
+        if (requestId !== state.thumbRequest) {
+          return;
+        }
+        state.thumbPendingUrl = null;
+        if (!state.thumbUrl) {
+          renderThumb(null);
+        }
+      });
+  }
+
+  function renderThumbBlob(url, blob, requestId) {
+    const objectUrl = URL.createObjectURL(blob);
     const nextImage = new Image();
     nextImage.alt = "";
     nextImage.decoding = "async";
     nextImage.referrerPolicy = "no-referrer";
     nextImage.onload = () => {
       if (requestId !== state.thumbRequest || state.thumbPendingUrl !== url) {
+        URL.revokeObjectURL(objectUrl);
         return;
       }
 
       const oldImages = Array.from(state.thumbSlot.querySelectorAll("img"));
+      const oldObjectUrl = state.thumbObjectUrl;
       state.thumbSlot.className = "thumb";
       if (oldImages.length === 0) {
         state.thumbSlot.replaceChildren(nextImage);
@@ -166,9 +243,16 @@
       requestAnimationFrame(() => nextImage.classList.add("is-visible"));
       window.setTimeout(() => oldImages.forEach((image) => image.remove()), 220);
       state.thumbUrl = url;
+      state.thumbObjectUrl = objectUrl;
       state.thumbPendingUrl = null;
+      state.thumbSlot.removeAttribute("aria-busy");
+      state.thumbSlot.removeAttribute("aria-label");
+      if (oldObjectUrl) {
+        window.setTimeout(() => URL.revokeObjectURL(oldObjectUrl), 250);
+      }
     };
     nextImage.onerror = () => {
+      URL.revokeObjectURL(objectUrl);
       if (requestId !== state.thumbRequest) {
         return;
       }
@@ -177,7 +261,7 @@
         renderThumb(null);
       }
     };
-    nextImage.src = url;
+    nextImage.src = objectUrl;
   }
 
   function renderError(message) {
