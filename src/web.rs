@@ -24,7 +24,7 @@ use crate::{
     bambu::{MQTT_HOST, MQTT_PORT},
     cloud::{cloud_mqtt_startup, start_cloud_mqtt},
     devices::{
-        resolve_devices, resolve_video_endpoints, DeviceRegistry, DeviceSource, KnownDevice,
+        resolve_devices, resolve_video_endpoints, DeviceEntry, DeviceRegistry, DeviceSource,
         ResolvedVideoEndpoints,
     },
     local::{Endpoint, LocalEndpointArg, MqttEndpoint},
@@ -184,17 +184,19 @@ impl KnownDevices {
         KnownDevicesPayload {
             devices: self
                 .registry
-                .devices()
-                .map(|device| self.device(device, runtime_video_ids))
+                .entries()
+                .iter()
+                .map(|entry| self.device(entry, runtime_video_ids))
                 .collect(),
         }
     }
 
     fn device(
         &self,
-        device: &KnownDevice,
+        entry: &DeviceEntry,
         runtime_video_ids: &HashSet<String>,
     ) -> KnownDevicePayload {
+        let device = entry.device();
         let has_access_code = device.has_access_code();
         let has_video = runtime_video_ids.contains(device.id.as_str());
         let has_video = has_access_code && has_video;
@@ -203,7 +205,7 @@ impl KnownDevices {
             id: device.id.clone(),
             name: device.name.clone(),
             online: device.online,
-            source: device.source,
+            source: entry.source(),
             paths: device_paths(&device.id, has_video),
         }
     }

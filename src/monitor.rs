@@ -3,7 +3,7 @@ use tracing::info;
 
 use crate::{
     cloud::{cloud_mqtt_startup, CloudSession},
-    devices::{resolve_devices, DeviceRegistry, DeviceSource},
+    devices::{resolve_devices, DeviceRegistry},
     local::{LocalDevice, LocalEndpointArg, MqttEndpoint},
     mqtt::{monitor_target, MqttTarget},
 };
@@ -73,15 +73,16 @@ fn select_monitor_target(
             .with_context(|| format!("device `{device_id}` is not known"))?,
         None => registry.first().context("no devices are configured")?,
     };
-    let device = entry.device();
     let device_id = entry.id();
 
-    match device.source {
-        DeviceSource::Cloud => Ok(MonitorTarget::Cloud(device_id.to_owned())),
-        DeviceSource::Local => Ok(MonitorTarget::Local(entry.local().cloned().with_context(
-            || format!("selected local device `{device_id}` is missing LAN MQTT config"),
-        )?)),
+    if let Some(local) = entry.local() {
+        return Ok(MonitorTarget::Local(local.clone()));
     }
+    if entry.has_cloud_mqtt() {
+        return Ok(MonitorTarget::Cloud(device_id.to_owned()));
+    }
+
+    anyhow::bail!("selected device `{device_id}` has no MQTT capability")
 }
 
 #[cfg(test)]

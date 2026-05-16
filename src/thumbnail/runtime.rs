@@ -9,10 +9,7 @@ use tokio::sync::{Mutex, RwLock};
 use tracing::{debug, warn};
 
 use crate::{
-    bambu::PrinterStatus,
-    cloud::CloudSession,
-    devices::{DeviceRegistry, DeviceSource},
-    mqtt::MqttRuntime,
+    bambu::PrinterStatus, cloud::CloudSession, devices::DeviceRegistry, mqtt::MqttRuntime,
 };
 
 use super::{cloud, error_chain, local, trimmed, ThumbnailStatus};
@@ -189,31 +186,22 @@ impl ThumbnailRuntime {
         device_id: &str,
         report: &PrinterStatus,
     ) -> Result<ThumbnailStatus> {
-        let device = self
+        let entry = self
             .inner
             .registry
             .get(device_id)
-            .map(|entry| entry.device())
             .with_context(|| format!("device `{device_id}` is not known"))?;
 
-        match device.source {
-            DeviceSource::Cloud => {
-                cloud::fetch_thumbnail(self.inner.cloud.as_ref(), device_id, report)
-                    .await
-                    .map(ThumbnailStatus::Ready)
-            }
-            DeviceSource::Local => {
-                let local = self
-                    .inner
-                    .registry
-                    .get(device_id)
-                    .and_then(|entry| entry.local())
-                    .with_context(|| {
-                        format!("device `{device_id}` does not have a local endpoint")
-                    })?;
-                local::fetch_thumbnail(device_id, local, report).await
-            }
+        if let Some(local) = entry.local() {
+            return local::fetch_thumbnail(device_id, local, report).await;
         }
+        if entry.has_cloud_mqtt() {
+            return cloud::fetch_thumbnail(self.inner.cloud.as_ref(), device_id, report)
+                .await
+                .map(ThumbnailStatus::Ready);
+        }
+
+        anyhow::bail!("device `{device_id}` has no thumbnail data source")
     }
 
     async fn select_device_id(&self, requested_device_id: Option<&str>) -> Result<Option<String>> {

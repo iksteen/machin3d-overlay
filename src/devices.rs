@@ -25,7 +25,6 @@ pub(crate) struct KnownDevice {
     pub(crate) online: Option<bool>,
     pub(crate) access_code: Option<String>,
     pub(crate) status: PrinterStatus,
-    pub(crate) source: DeviceSource,
 }
 
 impl KnownDevice {
@@ -36,7 +35,6 @@ impl KnownDevice {
             online: device.online,
             access_code: device.access_code,
             status: device.status,
-            source: DeviceSource::Cloud,
         })
     }
 
@@ -47,7 +45,6 @@ impl KnownDevice {
             online: Some(true),
             access_code: Some(device.endpoint.access_code.clone()),
             status: PrinterStatus::default(),
-            source: DeviceSource::Local,
         }
     }
 
@@ -61,7 +58,13 @@ impl KnownDevice {
 #[derive(Debug, Clone)]
 pub(crate) struct DeviceEntry {
     device: KnownDevice,
-    local: Option<LocalDevice>,
+    capabilities: DeviceCapabilities,
+}
+
+#[derive(Debug, Clone, Default)]
+struct DeviceCapabilities {
+    cloud_mqtt: bool,
+    local_mqtt: Option<LocalDevice>,
     explicit_video: Option<VideoEndpoint>,
 }
 
@@ -72,6 +75,26 @@ pub(crate) struct DeviceRegistry {
 }
 
 impl DeviceEntry {
+    fn from_cloud(device: KnownDevice) -> Self {
+        Self {
+            device,
+            capabilities: DeviceCapabilities {
+                cloud_mqtt: true,
+                ..DeviceCapabilities::default()
+            },
+        }
+    }
+
+    fn from_local(local: LocalDevice) -> Self {
+        Self {
+            device: KnownDevice::from_local(&local),
+            capabilities: DeviceCapabilities {
+                local_mqtt: Some(local),
+                ..DeviceCapabilities::default()
+            },
+        }
+    }
+
     pub(crate) fn device(&self) -> &KnownDevice {
         &self.device
     }
@@ -80,12 +103,24 @@ impl DeviceEntry {
         self.device.id.as_str()
     }
 
+    pub(crate) fn source(&self) -> DeviceSource {
+        if self.local().is_some() {
+            DeviceSource::Local
+        } else {
+            DeviceSource::Cloud
+        }
+    }
+
+    pub(crate) fn has_cloud_mqtt(&self) -> bool {
+        self.capabilities.cloud_mqtt
+    }
+
     pub(crate) fn local(&self) -> Option<&LocalDevice> {
-        self.local.as_ref()
+        self.capabilities.local_mqtt.as_ref()
     }
 
     pub(crate) fn explicit_video(&self) -> Option<&VideoEndpoint> {
-        self.explicit_video.as_ref()
+        self.capabilities.explicit_video.as_ref()
     }
 }
 
@@ -107,19 +142,11 @@ impl DeviceRegistry {
                 .is_none_or(|device_id| !local_ids.contains(device_id))
         }) {
             if let Some(device) = KnownDevice::from_cloud(device) {
-                registry.push(DeviceEntry {
-                    device,
-                    local: None,
-                    explicit_video: None,
-                });
+                registry.push(DeviceEntry::from_cloud(device));
             }
         }
         for local in local_devices {
-            registry.push(DeviceEntry {
-                device: KnownDevice::from_local(&local),
-                local: Some(local),
-                explicit_video: None,
-            });
+            registry.push(DeviceEntry::from_local(local));
         }
 
         registry
@@ -150,14 +177,14 @@ impl DeviceRegistry {
     pub(crate) fn local_devices(&self) -> Vec<LocalDevice> {
         self.entries
             .iter()
-            .filter_map(|entry| entry.local.clone())
+            .filter_map(|entry| entry.local().cloned())
             .collect()
     }
 
     pub(crate) fn cloud_mqtt_ids(&self) -> Vec<String> {
         self.entries
             .iter()
-            .filter(|entry| entry.device.source == DeviceSource::Cloud)
+            .filter(|entry| entry.has_cloud_mqtt())
             .map(|entry| entry.device.id.clone())
             .collect()
     }
@@ -176,7 +203,7 @@ impl DeviceRegistry {
             };
             let entry = &mut self.entries[index];
             resolve_known_device_access(&mut entry.device, &video, cloud, bind_metadata).await?;
-            entry.explicit_video = Some(video);
+            entry.capabilities.explicit_video = Some(video);
         }
         Ok(())
     }
