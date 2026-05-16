@@ -1,7 +1,5 @@
 use std::{
     collections::{HashMap, HashSet},
-    fmt, str,
-    str::FromStr,
     sync::{
         atomic::{AtomicUsize, Ordering},
         Arc,
@@ -13,7 +11,6 @@ use anyhow::{bail, ensure, Context, Result};
 use bytes::Bytes;
 use tokio::{
     io::{AsyncRead, AsyncReadExt, AsyncWriteExt},
-    net::TcpStream,
     sync::{broadcast, Mutex, Notify},
     task::JoinHandle,
 };
@@ -23,87 +20,18 @@ use tracing::{info, warn};
 use crate::{
     device_tls,
     devices::{DeviceRegistry, KnownDevice},
-    local::{parse_access_code_arg, Endpoint},
 };
 
-pub const DEFAULT_VIDEO_PORT: u16 = 6000;
+use super::{
+    endpoint::VideoEndpoint,
+    probe::connect_video_tcp,
+    protocol::{auth_packet, is_jpeg, mjpeg_part, MAX_FRAME_SIZE},
+};
+
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
-const VIDEO_PROBE_TIMEOUT: Duration = Duration::from_secs(2);
 const READ_TIMEOUT: Duration = Duration::from_secs(15);
 const RETRY_INITIAL_DELAY: Duration = Duration::from_secs(1);
 const RETRY_MAX_DELAY: Duration = Duration::from_secs(30);
-const MAX_FRAME_SIZE: usize = 16 * 1024 * 1024;
-const MJPEG_BOUNDARY: &str = "frame";
-
-#[derive(Clone, Debug, Eq)]
-pub struct VideoEndpoint {
-    endpoint: Endpoint,
-    access_code: Option<String>,
-}
-
-impl VideoEndpoint {
-    pub fn new(endpoint: Endpoint, access_code: Option<String>) -> Self {
-        Self {
-            endpoint,
-            access_code,
-        }
-    }
-
-    fn address(&self) -> String {
-        self.endpoint.to_string()
-    }
-
-    fn host(&self) -> &str {
-        self.endpoint.host.as_str()
-    }
-
-    fn port(&self) -> u16 {
-        self.endpoint.port
-    }
-
-    pub(crate) fn access_code(&self) -> Option<&str> {
-        self.access_code.as_deref()
-    }
-}
-
-impl PartialEq for VideoEndpoint {
-    fn eq(&self, other: &Self) -> bool {
-        self.endpoint == other.endpoint
-    }
-}
-
-impl fmt::Display for VideoEndpoint {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter.write_str(&self.address())
-    }
-}
-
-impl FromStr for VideoEndpoint {
-    type Err = String;
-
-    fn from_str(value: &str) -> std::result::Result<Self, Self::Err> {
-        parse_video_endpoint(value)
-    }
-}
-
-fn parse_video_endpoint(value: &str) -> std::result::Result<VideoEndpoint, String> {
-    let value = value.trim();
-    if value.is_empty() {
-        return Err("video endpoint must not be empty".to_owned());
-    }
-
-    let fields = value.splitn(3, ',').collect::<Vec<_>>();
-    if fields.len() > 2 {
-        return Err(format!(
-            "invalid video endpoint `{value}`: expected HOST[:PORT][,ACCESS_CODE]"
-        ));
-    }
-
-    let endpoint =
-        Endpoint::parse_with_default(fields[0].trim(), "video endpoint", DEFAULT_VIDEO_PORT)?;
-    let access_code = parse_access_code_arg(fields.get(1).copied(), "video endpoint", value)?;
-    Ok(VideoEndpoint::new(endpoint, access_code))
-}
 
 #[derive(Clone)]
 pub struct VideoRuntime {
@@ -139,22 +67,6 @@ struct VideoClientGuard {
 struct VideoSession {
     device_id: String,
     access_code: String,
-}
-
-pub fn mjpeg_content_type() -> String {
-    format!("multipart/x-mixed-replace; boundary={MJPEG_BOUNDARY}")
-}
-
-pub fn mjpeg_part(frame: &[u8]) -> Bytes {
-    let header = format!(
-        "--{MJPEG_BOUNDARY}\r\nContent-Type: image/jpeg\r\nContent-Length: {}\r\n\r\n",
-        frame.len()
-    );
-    let mut part = Vec::with_capacity(header.len() + frame.len() + 2);
-    part.extend_from_slice(header.as_bytes());
-    part.extend_from_slice(frame);
-    part.extend_from_slice(b"\r\n");
-    Bytes::from(part)
 }
 
 impl VideoRuntime {
@@ -236,41 +148,6 @@ impl VideoRuntime {
             )));
         }
     }
-}
-
-pub async fn probe_video_endpoint(device_id: &str, endpoint: &VideoEndpoint) -> Result<()> {
-    let device_id = device_id.trim();
-    ensure!(!device_id.is_empty(), "device ID is empty");
-    let address = endpoint.address();
-    let tcp = connect_video_tcp(endpoint, VIDEO_PROBE_TIMEOUT, "probing video server").await?;
-
-    let tls = device_tls::tokio_connector()?;
-    let socket = tokio::time::timeout(VIDEO_PROBE_TIMEOUT, tls.connect(device_id, tcp))
-        .await
-        .with_context(|| format!("timed out probing video TLS at {address}"))?
-        .with_context(|| format!("failed TLS handshake while probing video server at {address}"))?;
-    let certificate_device_id = device_tls::peer_device_id(&socket)
-        .context("video server certificate did not include a usable common name")?;
-    ensure!(
-        certificate_device_id == device_id,
-        "video endpoint certificate is for device `{certificate_device_id}`, not `{device_id}`"
-    );
-
-    Ok(())
-}
-
-pub async fn infer_video_device_id(endpoint: &VideoEndpoint) -> Result<String> {
-    let address = endpoint.address();
-    let tcp = connect_video_tcp(endpoint, VIDEO_PROBE_TIMEOUT, "probing video server").await?;
-
-    let tls = device_tls::tokio_connector()?;
-    let socket = tokio::time::timeout(VIDEO_PROBE_TIMEOUT, tls.connect(endpoint.host(), tcp))
-        .await
-        .with_context(|| format!("timed out probing video TLS at {address}"))?
-        .with_context(|| format!("failed TLS handshake while probing video server at {address}"))?;
-
-    device_tls::peer_device_id(&socket)
-        .context("video server certificate did not include a usable common name")
 }
 
 impl VideoSubscription {
@@ -405,21 +282,6 @@ async fn stream_endpoint_once(
     Ok(())
 }
 
-async fn connect_video_tcp(
-    endpoint: &VideoEndpoint,
-    timeout: Duration,
-    action: &str,
-) -> Result<TcpStream> {
-    let address = endpoint.address();
-    tokio::time::timeout(
-        timeout,
-        TcpStream::connect((endpoint.host(), endpoint.port())),
-    )
-    .await
-    .with_context(|| format!("timed out {action} at {address}"))?
-    .with_context(|| format!("failed to connect to video server at {address}"))
-}
-
 async fn sleep_or_no_clients(stream: &VideoStream, delay: Duration) {
     let no_clients = stream.no_clients.notified();
     tokio::pin!(no_clients);
@@ -501,32 +363,6 @@ fn video_session(device: &KnownDevice) -> Option<VideoSession> {
     })
 }
 
-fn auth_packet(access_code: &str) -> Result<[u8; 80]> {
-    let mut packet = [0_u8; 80];
-    packet[0..4].copy_from_slice(&0x40_u32.to_le_bytes());
-    packet[4..8].copy_from_slice(&0x3000_u32.to_le_bytes());
-    packet[8..12].copy_from_slice(&0_u32.to_le_bytes());
-    packet[12..16].copy_from_slice(&0_u32.to_le_bytes());
-    write_auth_field(&mut packet[16..48], "bblp", "video username")?;
-    write_auth_field(&mut packet[48..80], access_code.trim(), "video access code")?;
-    Ok(packet)
-}
-
-fn write_auth_field(target: &mut [u8], value: &str, label: &str) -> Result<()> {
-    ensure!(value.is_ascii(), "{label} must be ASCII");
-    ensure!(
-        value.len() <= target.len(),
-        "{label} must fit in {} bytes",
-        target.len()
-    );
-    target[..value.len()].copy_from_slice(value.as_bytes());
-    Ok(())
-}
-
-fn is_jpeg(frame: &[u8]) -> bool {
-    frame.starts_with(&[0xff, 0xd8]) && frame.ends_with(&[0xff, 0xd9])
-}
-
 async fn candidate_endpoints(inner: &VideoRuntimeInner, device_id: &str) -> Vec<VideoEndpoint> {
     let endpoints = inner.endpoints.clone();
     let remembered = inner.endpoint_map.lock().await.get(device_id).cloned();
@@ -576,8 +412,10 @@ mod tests {
 
     use serde_json::json;
 
-    use super::{auth_packet, is_jpeg, mjpeg_part, order_endpoints, select_session, VideoEndpoint};
     use crate::{bambu::CloudDevice, devices::KnownDevice};
+
+    use super::{order_endpoints, select_session};
+    use crate::video::VideoEndpoint;
 
     fn device(value: serde_json::Value) -> KnownDevice {
         KnownDevice::from_cloud(serde_json::from_value::<CloudDevice>(value).unwrap())
@@ -586,26 +424,6 @@ mod tests {
 
     fn endpoint(value: &str) -> VideoEndpoint {
         VideoEndpoint::from_str(value).expect("endpoint should parse")
-    }
-
-    #[test]
-    fn auth_packet_matches_a1_p1_protocol_layout() {
-        let packet = auth_packet("12345678").expect("access code should fit");
-
-        assert_eq!(&packet[0..4], &0x40_u32.to_le_bytes());
-        assert_eq!(&packet[4..8], &0x3000_u32.to_le_bytes());
-        assert_eq!(&packet[8..12], &0_u32.to_le_bytes());
-        assert_eq!(&packet[12..16], &0_u32.to_le_bytes());
-        assert_eq!(&packet[16..20], b"bblp");
-        assert!(packet[20..48].iter().all(|byte| *byte == 0));
-        assert_eq!(&packet[48..56], b"12345678");
-        assert!(packet[56..80].iter().all(|byte| *byte == 0));
-    }
-
-    #[test]
-    fn auth_packet_rejects_fields_that_do_not_fit() {
-        let error = auth_packet("123456789012345678901234567890123").unwrap_err();
-        assert!(error.to_string().contains("video access code"));
     }
 
     #[test]
@@ -667,59 +485,6 @@ mod tests {
     }
 
     #[test]
-    fn video_endpoint_parser_defaults_to_port_6000() {
-        let endpoint = endpoint("192.168.1.50");
-
-        assert_eq!(endpoint.endpoint.host, "192.168.1.50");
-        assert_eq!(endpoint.endpoint.port, 6000);
-        assert_eq!(endpoint.to_string(), "192.168.1.50:6000");
-    }
-
-    #[test]
-    fn video_endpoint_parser_accepts_custom_port() {
-        let endpoint = endpoint("printer.local:6001");
-
-        assert_eq!(endpoint.endpoint.host, "printer.local");
-        assert_eq!(endpoint.endpoint.port, 6001);
-        assert_eq!(endpoint.to_string(), "printer.local:6001");
-    }
-
-    #[test]
-    fn video_endpoint_parser_accepts_access_code_without_displaying_it() {
-        let endpoint = endpoint("printer.local:6001,12345678");
-
-        assert_eq!(endpoint.endpoint.host, "printer.local");
-        assert_eq!(endpoint.endpoint.port, 6001);
-        assert_eq!(endpoint.access_code(), Some("12345678"));
-        assert_eq!(endpoint.to_string(), "printer.local:6001");
-    }
-
-    #[test]
-    fn video_endpoint_parser_rejects_name_metadata() {
-        let error = VideoEndpoint::from_str("printer.local:6001,12345678,Office").unwrap_err();
-
-        assert!(error.contains("HOST[:PORT][,ACCESS_CODE]"));
-    }
-
-    #[test]
-    fn video_endpoint_parser_accepts_bracketed_ipv6_with_port() {
-        let endpoint = endpoint("[fe80::1]:6002");
-
-        assert_eq!(endpoint.endpoint.host, "fe80::1");
-        assert_eq!(endpoint.endpoint.port, 6002);
-        assert_eq!(endpoint.to_string(), "[fe80::1]:6002");
-    }
-
-    #[test]
-    fn video_endpoint_parser_keeps_unbracketed_ipv6_on_default_port() {
-        let endpoint = endpoint("fe80::1");
-
-        assert_eq!(endpoint.endpoint.host, "fe80::1");
-        assert_eq!(endpoint.endpoint.port, 6000);
-        assert_eq!(endpoint.to_string(), "[fe80::1]:6000");
-    }
-
-    #[test]
     fn remembered_video_endpoint_is_tried_first() {
         let endpoints = order_endpoints(
             vec![
@@ -738,22 +503,5 @@ mod tests {
                 endpoint("192.168.1.52"),
             ]
         );
-    }
-
-    #[test]
-    fn mjpeg_part_contains_boundary_headers_and_frame() {
-        let part = mjpeg_part(&[0xff, 0xd8, 0xff, 0xd9]);
-
-        assert!(
-            part.starts_with(b"--frame\r\nContent-Type: image/jpeg\r\nContent-Length: 4\r\n\r\n")
-        );
-        assert!(part.ends_with(&[0xff, 0xd8, 0xff, 0xd9, b'\r', b'\n']));
-    }
-
-    #[test]
-    fn jpeg_check_requires_soi_and_eoi_markers() {
-        assert!(is_jpeg(&[0xff, 0xd8, 0x00, 0xff, 0xd9]));
-        assert!(!is_jpeg(&[0xff, 0xd8, 0x00]));
-        assert!(!is_jpeg(&[0x00, 0xff, 0xd9]));
     }
 }
