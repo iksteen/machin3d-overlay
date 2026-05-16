@@ -93,9 +93,9 @@ impl CurrentPrintService {
     }
 
     pub(super) async fn payload(&self) -> Result<OverlayPayload> {
-        let reports = self.mqtt.reports().await;
+        let states = self.mqtt.live_states().await;
         let status = self.mqtt.status().await;
-        let devices = summarize_devices(self.registry.devices(), &reports)
+        let devices = summarize_devices(self.registry.devices(), &states)
             .into_iter()
             .map(overlay_device)
             .collect();

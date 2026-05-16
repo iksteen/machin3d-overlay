@@ -9,7 +9,10 @@ use tokio::sync::{Mutex, RwLock};
 use tracing::{debug, warn};
 
 use crate::{
-    bambu::PrinterStatus, cloud::CloudSession, devices::DeviceRegistry, mqtt::MqttRuntime,
+    bambu::PrinterStatus,
+    cloud::CloudSession,
+    devices::DeviceRegistry,
+    mqtt::{MqttDeviceState, MqttRuntime},
 };
 
 use super::{cloud, error_chain, local, trimmed, ThumbnailStatus};
@@ -87,21 +90,21 @@ impl ThumbnailRuntime {
     }
 
     async fn refresh_changed_devices(&self) {
-        let reports = self.inner.mqtt.reports().await;
+        let states = self.inner.mqtt.live_states().await;
         for device in self.inner.registry.devices() {
             let device_id = device.id.as_str();
-            let Some(report) = reports.get(device_id) else {
+            let Some(state) = states.get(device_id) else {
                 self.clear_device(device_id).await;
                 continue;
             };
-            let Some(task) = TaskKey::from_report(report) else {
+            let Some(task) = TaskKey::from_state(state) else {
                 self.clear_device(device_id).await;
                 continue;
             };
             if self.cache_matches(device_id, &task).await {
                 continue;
             }
-            if let Err(error) = self.fetch_and_cache(device_id, report, task).await {
+            if let Err(error) = self.fetch_and_cache(device_id, &state.report, task).await {
                 warn!(
                     device_id,
                     error = %error_chain(&error),
@@ -112,19 +115,19 @@ impl ThumbnailRuntime {
     }
 
     async fn refresh_device(&self, device_id: &str) -> Result<()> {
-        let reports = self.inner.mqtt.reports().await;
-        let Some(report) = reports.get(device_id) else {
+        let states = self.inner.mqtt.live_states().await;
+        let Some(state) = states.get(device_id) else {
             self.clear_device(device_id).await;
             return Ok(());
         };
-        let Some(task) = TaskKey::from_report(report) else {
+        let Some(task) = TaskKey::from_state(state) else {
             self.clear_device(device_id).await;
             return Ok(());
         };
         if self.cache_matches(device_id, &task).await {
             return Ok(());
         }
-        self.fetch_and_cache(device_id, report, task).await
+        self.fetch_and_cache(device_id, &state.report, task).await
     }
 
     async fn fetch_and_cache(
@@ -269,6 +272,13 @@ impl ThumbnailRuntime {
 }
 
 impl TaskKey {
+    fn from_state(state: &MqttDeviceState) -> Option<Self> {
+        state
+            .is_active_task()
+            .then(|| Self::from_report(&state.report))
+            .flatten()
+    }
+
     fn from_report(report: &PrinterStatus) -> Option<Self> {
         let task_id = trimmed(report.task_id.as_deref());
         let filename = trimmed(report.filename.as_deref());
@@ -295,7 +305,7 @@ mod tests {
     use crate::{
         bambu::{CloudDevice, PrinterStatus},
         devices::DeviceRegistry,
-        mqtt::MqttRuntime,
+        mqtt::{MqttDeviceState, MqttRuntime},
     };
 
     use super::{TaskKey, ThumbnailEntry, ThumbnailRuntime};
@@ -313,6 +323,19 @@ mod tests {
 
         assert!(TaskKey::from_report(&report).is_some());
         assert_eq!(TaskKey::from_report(&PrinterStatus::default()), None);
+    }
+
+    #[test]
+    fn task_key_ignores_inactive_live_state() {
+        let state = MqttDeviceState::from_report(PrinterStatus {
+            status: Some("FINISH".to_owned()),
+            task_id: Some("task-1".to_owned()),
+            filename: Some("cube.3mf".to_owned()),
+            task_name: Some("Cube".to_owned()),
+            ..PrinterStatus::default()
+        });
+
+        assert_eq!(TaskKey::from_state(&state), None);
     }
 
     #[tokio::test]

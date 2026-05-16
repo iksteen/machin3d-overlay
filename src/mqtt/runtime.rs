@@ -5,6 +5,8 @@ use tokio::sync::{broadcast, RwLock};
 
 use crate::bambu::PrinterStatus;
 
+use super::{MqttDeviceState, PrintActivity};
+
 #[derive(Clone)]
 pub struct MqttRuntime {
     inner: Arc<RwLock<MqttState>>,
@@ -47,8 +49,19 @@ impl MqttRuntime {
         self.changes.subscribe()
     }
 
-    pub async fn reports(&self) -> HashMap<String, PrinterStatus> {
-        self.inner.read().await.reports.clone()
+    pub(crate) async fn live_states(&self) -> HashMap<String, MqttDeviceState> {
+        self.inner
+            .read()
+            .await
+            .reports
+            .iter()
+            .map(|(device_id, report)| {
+                (
+                    device_id.clone(),
+                    MqttDeviceState::from_report(report.clone()),
+                )
+            })
+            .collect()
     }
 
     pub async fn status(&self) -> MqttStatusPayload {
@@ -94,6 +107,13 @@ impl MqttRuntime {
         let mut state = self.inner.write().await;
         let previous = state.reports.entry(device_id.to_owned()).or_default();
         previous.merge(report);
+        if let PrintActivity::Unknown(gcode_state) = PrintActivity::from_report(previous) {
+            tracing::debug!(
+                device_id,
+                gcode_state,
+                "unknown MQTT printer gcode_state; treating task as inactive"
+            );
+        }
         state.updated_at = Some(chrono::Utc::now().to_rfc3339());
         refresh_status(&mut state);
         drop(state);

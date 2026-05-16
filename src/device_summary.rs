@@ -3,6 +3,7 @@ use std::collections::HashMap;
 use crate::{
     bambu::{AmsState, PrinterStatus, Tray},
     devices::KnownDevice,
+    mqtt::{MqttDeviceState, PrintActivity},
 };
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -49,71 +50,76 @@ pub(crate) struct Spool {
 
 struct DeviceFields<'a> {
     device: &'a KnownDevice,
-    report: Option<&'a PrinterStatus>,
+    live: Option<&'a MqttDeviceState>,
 }
 
 impl<'a> DeviceFields<'a> {
-    fn new(device: &'a KnownDevice, report: Option<&'a PrinterStatus>) -> Self {
-        Self { device, report }
+    fn new(device: &'a KnownDevice, live: Option<&'a MqttDeviceState>) -> Self {
+        Self { device, live }
     }
 
     fn catalog_status(&self) -> &PrinterStatus {
         &self.device.status
     }
 
-    fn print_string(&self, pick: impl Fn(&PrinterStatus) -> Option<&String>) -> Option<String> {
-        self.report
-            .and_then(&pick)
-            .or_else(|| pick(self.catalog_status()))
-            .cloned()
+    fn report_status(&self) -> Option<&PrinterStatus> {
+        self.live.map(|state| &state.report)
+    }
+
+    fn active_status(&self) -> Option<&PrinterStatus> {
+        if let Some(live) = self.live {
+            return live.is_active_task().then_some(&live.report);
+        }
+        let catalog_status = self.catalog_status();
+        PrintActivity::from_report(catalog_status)
+            .is_active_task()
+            .then_some(catalog_status)
+    }
+
+    fn active_string(&self, pick: impl Fn(&PrinterStatus) -> Option<&String>) -> Option<String> {
+        self.active_status().and_then(pick).cloned()
     }
 
     fn print_f64(&self, pick: impl Fn(&PrinterStatus) -> Option<f64>) -> Option<f64> {
-        self.report
+        self.report_status()
             .and_then(&pick)
             .or_else(|| pick(self.catalog_status()))
     }
 
-    fn print_i64(&self, pick: impl Fn(&PrinterStatus) -> Option<i64>) -> Option<i64> {
-        self.report
-            .and_then(&pick)
-            .or_else(|| pick(self.catalog_status()))
+    fn active_f64(&self, pick: impl Fn(&PrinterStatus) -> Option<f64>) -> Option<f64> {
+        self.active_status().and_then(pick)
+    }
+
+    fn active_i64(&self, pick: impl Fn(&PrinterStatus) -> Option<i64>) -> Option<i64> {
+        self.active_status().and_then(pick)
     }
 
     fn ams(&self) -> Option<&AmsState> {
-        self.report
-            .and_then(|print| print.ams.as_ref())
+        self.report_status()
+            .and_then(|status| status.ams.as_ref())
             .filter(|ams| ams.has_spool_data())
             .or(self.catalog_status().ams.as_ref())
     }
 
     fn external_tray(&self) -> Option<&Tray> {
-        self.report
-            .and_then(|print| print.external_tray.as_ref())
+        self.report_status()
+            .and_then(|status| status.external_tray.as_ref())
             .filter(|tray| tray.has_spool_data())
             .or(self.catalog_status().external_tray.as_ref())
     }
 
     fn display_mode(&self) -> Option<String> {
-        self.report
-            .and_then(print_mode)
-            .or_else(|| print_mode(self.catalog_status()))
+        self.active_status().and_then(print_mode)
     }
 
     fn active_tray(&self) -> Option<i64> {
-        self.report
-            .and_then(|print| print.ams.as_ref())
+        self.active_status()
+            .and_then(|status| status.ams.as_ref())
             .and_then(|ams| ams.tray_now)
-            .or_else(|| {
-                self.catalog_status()
-                    .ams
-                    .as_ref()
-                    .and_then(|ams| ams.tray_now)
-            })
     }
 
     fn task_id(&self) -> Option<String> {
-        self.print_string(|print| print.task_id.as_ref())
+        self.active_string(|print| print.task_id.as_ref())
     }
 
     fn device_id(&self) -> String {
@@ -121,43 +127,23 @@ impl<'a> DeviceFields<'a> {
     }
 
     fn task_name(&self) -> Option<String> {
-        self.print_string(|print| print.task_name.as_ref())
+        self.active_string(|print| print.task_name.as_ref())
     }
 
     fn task_status(&self) -> Option<String> {
-        self.print_string(|print| print.status.as_ref())
+        self.active_string(|print| print.status.as_ref())
     }
 
     fn progress(&self) -> Option<f64> {
-        self.print_f64(|print| print.progress)
+        self.active_f64(|print| print.progress)
     }
 
     fn prediction(&self) -> Option<f64> {
-        self.print_f64(|print| print.prediction_seconds)
+        self.active_f64(|print| print.prediction_seconds)
     }
 
     fn start_time(&self) -> Option<String> {
-        self.print_string(|print| print.start_time.as_ref())
-    }
-
-    fn has_print_status_task(
-        &self,
-        task_name: &Option<String>,
-        task_id: &Option<String>,
-        task_status: &Option<String>,
-        start_time: &Option<String>,
-        prediction: Option<f64>,
-        progress: Option<f64>,
-    ) -> bool {
-        task_name.is_some()
-            || task_id.is_some()
-            || task_status.is_some()
-            || start_time.is_some()
-            || prediction.is_some()
-            || progress.is_some()
-            || self.print_string(|print| print.filename.as_ref()).is_some()
-            || self.print_i64(|print| print.layer_current).is_some()
-            || self.print_i64(|print| print.layer_total).is_some()
+        self.active_string(|print| print.start_time.as_ref())
     }
 
     fn summary(&self) -> DeviceSummary {
@@ -168,18 +154,11 @@ impl<'a> DeviceFields<'a> {
         let progress = self.progress();
         let prediction = self.prediction();
         let start_time = self.start_time();
-        let filename = self.print_string(|print| print.filename.as_ref());
+        let filename = self.active_string(|print| print.filename.as_ref());
         let active_tray = self.active_tray();
-        let has_print_status_task = self.has_print_status_task(
-            &task_name,
-            &task_id,
-            &task_status,
-            &start_time,
-            prediction,
-            progress,
-        );
+        let is_printing = self.active_status().is_some();
         let thumbnail_task = thumbnail_task(
-            has_print_status_task,
+            is_printing,
             task_id.as_deref(),
             filename.as_deref(),
             task_name.as_deref(),
@@ -202,11 +181,11 @@ impl<'a> DeviceFields<'a> {
             prediction,
             progress,
             thumbnail_task,
-            weight: self.print_string(|print| print.weight.as_ref()),
-            layer_current: self.print_i64(|print| print.layer_current),
-            layer_total: self.print_i64(|print| print.layer_total),
+            weight: self.active_string(|print| print.weight.as_ref()),
+            layer_current: self.active_i64(|print| print.layer_current),
+            layer_total: self.active_i64(|print| print.layer_total),
             remaining_seconds: self
-                .print_f64(|print| print.remaining_minutes)
+                .active_f64(|print| print.remaining_minutes)
                 .map(|minutes| minutes * 60.0),
             toolhead_temperature: self.print_f64(|print| print.toolhead_temperature),
             bed_temperature: self.print_f64(|print| print.bed_temperature),
@@ -214,7 +193,7 @@ impl<'a> DeviceFields<'a> {
             print_mode: self.display_mode(),
             ams_spools: ams_spools(self.ams(), active_tray),
             external_spool: external_spool(self.external_tray(), active_tray),
-            is_printing: has_print_status_task,
+            is_printing,
             task_source: TaskSource::PrinterStatus,
             plate_index: None,
         }
@@ -223,20 +202,20 @@ impl<'a> DeviceFields<'a> {
 
 pub(crate) fn summarize_devices<'a>(
     devices: impl IntoIterator<Item = &'a KnownDevice>,
-    reports: &HashMap<String, PrinterStatus>,
+    states: &HashMap<String, MqttDeviceState>,
 ) -> Vec<DeviceSummary> {
     devices
         .into_iter()
-        .map(|device| summarize_device(device, reports))
+        .map(|device| summarize_device(device, states))
         .collect()
 }
 
 fn summarize_device(
     device: &KnownDevice,
-    reports: &HashMap<String, PrinterStatus>,
+    states: &HashMap<String, MqttDeviceState>,
 ) -> DeviceSummary {
-    let report = reports.get(&device.id);
-    let fields = DeviceFields::new(device, report);
+    let state = states.get(&device.id);
+    let fields = DeviceFields::new(device, state);
     fields.summary()
 }
 
@@ -345,6 +324,7 @@ mod tests {
     use crate::{
         bambu::{CloudDevice, PrinterStatus, Tray},
         devices::KnownDevice,
+        mqtt::MqttDeviceState,
     };
 
     use super::{spool_color, summarize_devices, TaskSource};
@@ -355,6 +335,10 @@ mod tests {
 
     fn device(value: Value) -> KnownDevice {
         KnownDevice::from_cloud(decode::<CloudDevice>(value)).expect("device should have an ID")
+    }
+
+    fn live(value: Value) -> MqttDeviceState {
+        MqttDeviceState::from_report(decode::<PrinterStatus>(value))
     }
 
     #[test]
@@ -370,19 +354,21 @@ mod tests {
             device(json!({
                     "dev_id": "printer-b",
                     "print": {
+                        "gcode_state": "RUNNING",
                         "mc_percent": 1
                     }
             })),
         ];
-        let reports = HashMap::from([(
+        let states = HashMap::from([(
             "printer-a".to_owned(),
-            decode::<PrinterStatus>(json!({
+            live(json!({
+                "gcode_state": "RUNNING",
                 "mc_percent": 42,
                 "bed_temper": 60
             })),
         )]);
 
-        let summaries = summarize_devices(&devices, &reports);
+        let summaries = summarize_devices(&devices, &states);
 
         assert_eq!(summaries[0].progress, Some(42.0));
         assert_eq!(summaries[0].toolhead_temperature, Some(210.0));
@@ -395,6 +381,7 @@ mod tests {
         let devices = vec![device(json!({
                     "dev_id": "printer-a",
                     "print": {
+                        "gcode_state": "RUNNING",
                         "mc_percent": 12,
                         "ams": {
                             "ams": [
@@ -417,16 +404,17 @@ mod tests {
                         }
                     }
         }))];
-        let reports = HashMap::from([(
+        let states = HashMap::from([(
             "printer-a".to_owned(),
-            decode::<PrinterStatus>(json!({
+            live(json!({
+                "gcode_state": "RUNNING",
                 "mc_percent": 42,
                 "ams": {"tray_now": "777", "ams": [{"id": 0, "tray": [{"id": 0, "tray_color": "00000000"}]}]},
                 "vt_tray": {"id": 777, "tray_color": "00000000"}
             })),
         )]);
 
-        let summary = summarize_devices(&devices, &reports)
+        let summary = summarize_devices(&devices, &states)
             .into_iter()
             .next()
             .unwrap();
@@ -448,6 +436,7 @@ mod tests {
                     "dev_name": "Office X1",
                     "dev_online": true,
                     "print": {
+                        "gcode_state": "RUNNING",
                         "subtask_name": "Calibration cube",
                         "mc_percent": 25,
                         "cost_time": 3600,
@@ -491,6 +480,59 @@ mod tests {
         assert_eq!(summary.ams_spools[0].material, "PLA");
         assert_eq!(summary.ams_spools[0].color, "#FF0000");
         assert!(summary.ams_spools[0].active);
+    }
+
+    #[test]
+    fn summarize_devices_ignores_stale_task_fields_when_printer_is_finished() {
+        let devices = vec![device(json!({
+            "dev_id": "printer-a",
+            "dev_name": "Office X1"
+        }))];
+        let states = HashMap::from([(
+            "printer-a".to_owned(),
+            live(json!({
+                "gcode_state": "FINISH",
+                "subtask_name": "Calibration cube",
+                "gcode_file": "calibration_cube.3mf",
+                "mc_percent": 100,
+                "layer_num": 20,
+                "total_layer_num": 20,
+                "nozzle_temper": 210,
+                "bed_temper": 60,
+                "ams": {
+                    "tray_now": "0",
+                    "ams": [
+                        {
+                            "id": 0,
+                            "tray": [
+                                {
+                                    "id": 0,
+                                    "tray_type": "PLA",
+                                    "tray_color": "ff0000ff"
+                                }
+                            ]
+                        }
+                    ]
+                }
+            })),
+        )]);
+
+        let summary = summarize_devices(&devices, &states)
+            .into_iter()
+            .next()
+            .unwrap();
+
+        assert!(!summary.is_printing);
+        assert_eq!(summary.title, None);
+        assert_eq!(summary.filename, None);
+        assert_eq!(summary.progress, None);
+        assert_eq!(summary.layer_current, None);
+        assert_eq!(summary.layer_total, None);
+        assert_eq!(summary.thumbnail_task, None);
+        assert_eq!(summary.toolhead_temperature, Some(210.0));
+        assert_eq!(summary.bed_temperature, Some(60.0));
+        assert_eq!(summary.ams_spools.len(), 1);
+        assert!(!summary.ams_spools[0].active);
     }
 
     #[test]
