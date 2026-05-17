@@ -3,7 +3,7 @@ use std::collections::HashMap;
 use crate::{
     bambu::{AmsState, PrinterStatus, Tray},
     devices::KnownDevice,
-    mqtt::{MqttDeviceState, PrintActivity},
+    mqtt::{MqttConnectionStatus, MqttDeviceConnection, MqttDeviceState, PrintActivity},
 };
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -17,6 +17,9 @@ pub(crate) struct DeviceSummary {
     pub(crate) id: String,
     pub(crate) name: String,
     pub(crate) online: bool,
+    pub(crate) service_status: MqttConnectionStatus,
+    pub(crate) service_connected: bool,
+    pub(crate) service_error: Option<String>,
     pub(crate) task_name: Option<String>,
     pub(crate) title: Option<String>,
     pub(crate) filename: Option<String>,
@@ -51,26 +54,59 @@ pub(crate) struct Spool {
 struct DeviceFields<'a> {
     device: &'a KnownDevice,
     live: Option<&'a MqttDeviceState>,
+    connection: Option<&'a MqttDeviceConnection>,
 }
 
 impl<'a> DeviceFields<'a> {
-    fn new(device: &'a KnownDevice, live: Option<&'a MqttDeviceState>) -> Self {
-        Self { device, live }
+    fn new(
+        device: &'a KnownDevice,
+        live: Option<&'a MqttDeviceState>,
+        connection: Option<&'a MqttDeviceConnection>,
+    ) -> Self {
+        Self {
+            device,
+            live,
+            connection,
+        }
     }
 
     fn catalog_status(&self) -> &PrinterStatus {
         &self.device.status
     }
 
+    fn connection(&self) -> Option<&MqttDeviceConnection> {
+        self.live.map(|state| &state.connection).or(self.connection)
+    }
+
+    fn service_connected(&self) -> bool {
+        self.service_status() == MqttConnectionStatus::Connected
+    }
+
+    fn service_status(&self) -> MqttConnectionStatus {
+        self.connection()
+            .map(|connection| connection.status)
+            .unwrap_or(MqttConnectionStatus::Disconnected)
+    }
+
+    fn catalog_fallback_status(&self) -> Option<&PrinterStatus> {
+        match self.live {
+            Some(live) if !live.is_fresh() => None,
+            None if self.connection().is_some() => None,
+            _ => Some(self.catalog_status()),
+        }
+    }
+
     fn report_status(&self) -> Option<&PrinterStatus> {
-        self.live.map(|state| &state.report)
+        self.live
+            .filter(|state| state.is_fresh())
+            .map(|state| &state.report)
     }
 
     fn active_status(&self) -> Option<&PrinterStatus> {
-        if let Some(live) = self.live {
+        if let Some(live) = self.live.filter(|state| state.is_fresh()) {
             return live.is_active_task().then_some(&live.report);
         }
-        let catalog_status = self.catalog_status();
+        let catalog_status = self.catalog_fallback_status()?;
         PrintActivity::from_report(catalog_status)
             .is_active_task()
             .then_some(catalog_status)
@@ -83,7 +119,7 @@ impl<'a> DeviceFields<'a> {
     fn print_f64(&self, pick: impl Fn(&PrinterStatus) -> Option<f64>) -> Option<f64> {
         self.report_status()
             .and_then(&pick)
-            .or_else(|| pick(self.catalog_status()))
+            .or_else(|| self.catalog_fallback_status().and_then(pick))
     }
 
     fn active_f64(&self, pick: impl Fn(&PrinterStatus) -> Option<f64>) -> Option<f64> {
@@ -98,14 +134,14 @@ impl<'a> DeviceFields<'a> {
         self.report_status()
             .and_then(|status| status.ams.as_ref())
             .filter(|ams| ams.has_spool_data())
-            .or(self.catalog_status().ams.as_ref())
+            .or_else(|| self.catalog_fallback_status()?.ams.as_ref())
     }
 
     fn external_tray(&self) -> Option<&Tray> {
         self.report_status()
             .and_then(|status| status.external_tray.as_ref())
             .filter(|tray| tray.has_spool_data())
-            .or(self.catalog_status().external_tray.as_ref())
+            .or_else(|| self.catalog_fallback_status()?.external_tray.as_ref())
     }
 
     fn display_mode(&self) -> Option<String> {
@@ -173,6 +209,11 @@ impl<'a> DeviceFields<'a> {
                 .clone()
                 .unwrap_or_else(|| "Bambu printer".to_owned()),
             online: self.device.online.unwrap_or(true),
+            service_status: self.service_status(),
+            service_connected: self.service_connected(),
+            service_error: self
+                .connection()
+                .and_then(|connection| connection.error.clone()),
             task_name: task_name.clone(),
             title: task_name,
             filename: filename.clone(),
@@ -203,19 +244,22 @@ impl<'a> DeviceFields<'a> {
 pub(crate) fn summarize_devices<'a>(
     devices: impl IntoIterator<Item = &'a KnownDevice>,
     states: &HashMap<String, MqttDeviceState>,
+    connections: &HashMap<String, MqttDeviceConnection>,
 ) -> Vec<DeviceSummary> {
     devices
         .into_iter()
-        .map(|device| summarize_device(device, states))
+        .map(|device| summarize_device(device, states, connections))
         .collect()
 }
 
 fn summarize_device(
     device: &KnownDevice,
     states: &HashMap<String, MqttDeviceState>,
+    connections: &HashMap<String, MqttDeviceConnection>,
 ) -> DeviceSummary {
     let state = states.get(&device.id);
-    let fields = DeviceFields::new(device, state);
+    let connection = connections.get(&device.id);
+    let fields = DeviceFields::new(device, state, connection);
     fields.summary()
 }
 
@@ -324,7 +368,7 @@ mod tests {
     use crate::{
         bambu::{CloudDevice, PrinterStatus, Tray},
         devices::KnownDevice,
-        mqtt::MqttDeviceState,
+        mqtt::{MqttConnectionStatus, MqttDeviceConnection, MqttDeviceState},
     };
 
     use super::{spool_color, summarize_devices, TaskSource};
@@ -339,6 +383,18 @@ mod tests {
 
     fn live(value: Value) -> MqttDeviceState {
         MqttDeviceState::from_report(decode::<PrinterStatus>(value))
+    }
+
+    fn stale_live(value: Value) -> MqttDeviceState {
+        MqttDeviceState::from_snapshot(
+            decode::<PrinterStatus>(value),
+            None,
+            MqttDeviceConnection {
+                key: Some("cloud".to_owned()),
+                status: MqttConnectionStatus::Disconnected,
+                error: Some("disconnected".to_owned()),
+            },
+        )
     }
 
     #[test]
@@ -368,8 +424,10 @@ mod tests {
             })),
         )]);
 
-        let summaries = summarize_devices(&devices, &states);
+        let summaries = summarize_devices(&devices, &states, &HashMap::new());
 
+        assert_eq!(summaries[0].service_status, MqttConnectionStatus::Connected);
+        assert!(summaries[0].service_connected);
         assert_eq!(summaries[0].progress, Some(42.0));
         assert_eq!(summaries[0].toolhead_temperature, Some(210.0));
         assert_eq!(summaries[0].bed_temperature, Some(60.0));
@@ -414,7 +472,7 @@ mod tests {
             })),
         )]);
 
-        let summary = summarize_devices(&devices, &states)
+        let summary = summarize_devices(&devices, &states, &HashMap::new())
             .into_iter()
             .next()
             .unwrap();
@@ -463,7 +521,7 @@ mod tests {
                     }
         }))];
 
-        let summary = summarize_devices(&devices, &HashMap::new())
+        let summary = summarize_devices(&devices, &HashMap::new(), &HashMap::new())
             .into_iter()
             .next()
             .unwrap();
@@ -480,6 +538,39 @@ mod tests {
         assert_eq!(summary.ams_spools[0].material, "PLA");
         assert_eq!(summary.ams_spools[0].color, "#FF0000");
         assert!(summary.ams_spools[0].active);
+    }
+
+    #[test]
+    fn summarize_devices_uses_registered_connecting_connection_without_report() {
+        let devices = vec![device(json!({
+            "dev_id": "printer-a",
+            "dev_name": "Office X1",
+            "print": {
+                "gcode_state": "RUNNING",
+                "subtask_name": "Cloud catalog cube",
+                "mc_percent": 12
+            }
+        }))];
+        let connections = HashMap::from([(
+            "printer-a".to_owned(),
+            MqttDeviceConnection {
+                key: Some("cloud".to_owned()),
+                status: MqttConnectionStatus::Connecting,
+                error: None,
+            },
+        )]);
+
+        let summary = summarize_devices(&devices, &HashMap::new(), &connections)
+            .into_iter()
+            .next()
+            .unwrap();
+
+        assert_eq!(summary.service_status, MqttConnectionStatus::Connecting);
+        assert!(!summary.service_connected);
+        assert_eq!(summary.service_error, None);
+        assert!(!summary.is_printing);
+        assert_eq!(summary.title, None);
+        assert_eq!(summary.progress, None);
     }
 
     #[test]
@@ -517,7 +608,7 @@ mod tests {
             })),
         )]);
 
-        let summary = summarize_devices(&devices, &states)
+        let summary = summarize_devices(&devices, &states, &HashMap::new())
             .into_iter()
             .next()
             .unwrap();
@@ -533,6 +624,57 @@ mod tests {
         assert_eq!(summary.bed_temperature, Some(60.0));
         assert_eq!(summary.ams_spools.len(), 1);
         assert!(!summary.ams_spools[0].active);
+    }
+
+    #[test]
+    fn summarize_devices_ignores_stale_mqtt_reports() {
+        let devices = vec![device(json!({
+            "dev_id": "printer-a",
+            "dev_name": "Office X1",
+            "print": {
+                "gcode_state": "RUNNING",
+                "subtask_name": "Cloud catalog cube",
+                "mc_percent": 12,
+                "nozzle_temper": 210,
+                "ams": {
+                    "ams": [
+                        {
+                            "id": 0,
+                            "tray": [
+                                {
+                                    "id": 0,
+                                    "tray_type": "PLA",
+                                    "tray_color": "ff0000ff"
+                                }
+                            ]
+                        }
+                    ]
+                }
+            }
+        }))];
+        let states = HashMap::from([(
+            "printer-a".to_owned(),
+            stale_live(json!({
+                "gcode_state": "RUNNING",
+                "subtask_name": "Calibration cube",
+                "mc_percent": 42,
+                "nozzle_temper": 210
+            })),
+        )]);
+
+        let summary = summarize_devices(&devices, &states, &HashMap::new())
+            .into_iter()
+            .next()
+            .unwrap();
+
+        assert_eq!(summary.service_status, MqttConnectionStatus::Disconnected);
+        assert!(!summary.service_connected);
+        assert_eq!(summary.service_error.as_deref(), Some("disconnected"));
+        assert!(!summary.is_printing);
+        assert_eq!(summary.title, None);
+        assert_eq!(summary.progress, None);
+        assert_eq!(summary.toolhead_temperature, None);
+        assert!(summary.ams_spools.is_empty());
     }
 
     #[test]

@@ -300,7 +300,7 @@ mod tests {
     use crate::{
         bambu::{CloudDevice, PrinterStatus},
         devices::DeviceRegistry,
-        mqtt::{MqttDeviceState, MqttRuntime},
+        mqtt::{MqttConnectionStatus, MqttDeviceConnection, MqttDeviceState, MqttRuntime},
     };
 
     use super::{TaskKey, ThumbnailEntry, ThumbnailRuntime};
@@ -329,6 +329,27 @@ mod tests {
             task_name: Some("Cube".to_owned()),
             ..PrinterStatus::default()
         });
+
+        assert_eq!(TaskKey::from_state(&state), None);
+    }
+
+    #[test]
+    fn task_key_ignores_stale_live_state() {
+        let state = MqttDeviceState::from_snapshot(
+            PrinterStatus {
+                status: Some("RUNNING".to_owned()),
+                task_id: Some("task-1".to_owned()),
+                filename: Some("cube.3mf".to_owned()),
+                task_name: Some("Cube".to_owned()),
+                ..PrinterStatus::default()
+            },
+            None,
+            MqttDeviceConnection {
+                key: Some("printer-a".to_owned()),
+                status: MqttConnectionStatus::Disconnected,
+                error: Some("disconnected".to_owned()),
+            },
+        );
 
         assert_eq!(TaskKey::from_state(&state), None);
     }

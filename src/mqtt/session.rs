@@ -30,6 +30,7 @@ pub(super) struct ReportSession {
 pub(super) struct ReportEvent {
     pub(super) topic: String,
     pub(super) payload: Vec<u8>,
+    pub(super) retained: bool,
 }
 
 impl ReportSession {
@@ -65,6 +66,7 @@ impl ReportSession {
                     return Ok(Some(ReportEvent {
                         topic: publish.topic,
                         payload: publish.payload.to_vec(),
+                        retained: publish.retain,
                     }));
                 }
                 Event::Incoming(Packet::Publish(publish)) => {

@@ -110,6 +110,27 @@ body {
   text-overflow: ellipsis;
 }
 
+.connection-bubble {
+  width: max-content;
+  max-width: 100%;
+  margin-bottom: 8px;
+  padding: 5px 9px;
+  border: 1px solid rgba(248, 113, 113, 0.58);
+  border-radius: 8px;
+  background: rgba(127, 29, 29, 0.72);
+  color: #ffe4e6;
+  font-size: 12px;
+  font-weight: 900;
+  line-height: 1.1;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.connection-bubble[hidden] {
+  display: none;
+}
+
 .info-line {
   margin-top: 8px;
   color: var(--muted);

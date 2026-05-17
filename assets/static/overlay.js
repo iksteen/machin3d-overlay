@@ -23,6 +23,7 @@
     thumbRetryTimer: null,
     thumbObjectUrl: null,
     thumbRequest: 0,
+    connectionBubble: document.getElementById("connectionBubble"),
     events: null,
     spoolIconId: 0,
   };
@@ -172,20 +173,25 @@
   }
 
   function renderThumb(url, force = false) {
+    if (!url) {
+      if (!force && state.thumbUrl == null && state.thumbPendingUrl == null) {
+        return;
+      }
+      clearThumbRetry();
+      ++state.thumbRequest;
+      state.thumbUrl = null;
+      state.thumbPendingUrl = null;
+      setThumbEmpty();
+      return;
+    }
+
     if (!force && (url === state.thumbUrl || url === state.thumbPendingUrl)) {
       return;
     }
 
     clearThumbRetry();
     const requestId = ++state.thumbRequest;
-    state.thumbPendingUrl = url || null;
-
-    if (!url) {
-      state.thumbUrl = null;
-      state.thumbPendingUrl = null;
-      setThumbEmpty();
-      return;
-    }
+    state.thumbPendingUrl = url;
 
     setThumbLoading();
     fetch(url, { cache: "no-store" })
@@ -265,6 +271,7 @@
   }
 
   function renderError(message) {
+    renderConnectionBubble(null);
     setText(state.title, message || "Could not load print status");
     setText(state.fileName, "--");
     setOptionalText(state.timeEstimate, "");
@@ -279,6 +286,21 @@
     setText(state.printMode, "--");
     renderSpools(state.spoolList, [], "No spool data");
     renderThumb(null);
+  }
+
+  function renderConnectionBubble(device) {
+    if (!state.connectionBubble) {
+      return;
+    }
+    const status = device?.serviceStatus || (device?.serviceConnected === false ? "disconnected" : "connected");
+    const unavailable = status !== "connected";
+    state.connectionBubble.hidden = !unavailable;
+    state.connectionBubble.textContent = status === "connecting" ? "Printer connecting" : "Printer disconnected";
+    if (unavailable && device.serviceError) {
+      state.connectionBubble.title = device.serviceError;
+    } else {
+      state.connectionBubble.removeAttribute("title");
+    }
   }
 
   function render(data) {
@@ -296,6 +318,7 @@
     const progress = Number.isFinite(device.progress) ? Math.max(0, Math.min(100, device.progress)) : null;
     const title = device.isPrinting ? fallback(device.title, "Unknown print") : fallback(device.title, "No active print");
 
+    renderConnectionBubble(device);
     setText(state.title, title);
     setText(state.fileName, fallback(device.filename));
     setOptionalText(state.timeEstimate, device.totalPrintTime);

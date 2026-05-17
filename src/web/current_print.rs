@@ -55,6 +55,9 @@ struct OverlayDevice {
     id: String,
     name: String,
     online: bool,
+    service_status: &'static str,
+    service_connected: bool,
+    service_error: Option<String>,
     is_printing: bool,
     title: Option<String>,
     filename: Option<String>,
@@ -93,17 +96,20 @@ impl CurrentPrintService {
     }
 
     pub(super) async fn payload(&self) -> Result<OverlayPayload> {
-        let states = self.mqtt.live_states().await;
-        let status = self.mqtt.status().await;
-        let devices = summarize_devices(self.registry.devices(), &states)
-            .into_iter()
-            .map(overlay_device)
-            .collect();
+        let snapshot = self.mqtt.snapshot().await;
+        let devices = summarize_devices(
+            self.registry.devices(),
+            &snapshot.devices,
+            &snapshot.connections,
+        )
+        .into_iter()
+        .map(overlay_device)
+        .collect();
 
         Ok(OverlayPayload {
             ok: true,
             updated_at: Utc::now().to_rfc3339(),
-            mqtt: status,
+            mqtt: snapshot.status,
             devices,
         })
     }
@@ -183,6 +189,9 @@ fn overlay_device(device: DeviceSummary) -> OverlayDevice {
         id: device.id,
         name: device.name,
         online: device.online,
+        service_status: device.service_status.as_str(),
+        service_connected: device.service_connected,
+        service_error: device.service_error,
         is_printing: device.is_printing,
         title: device.title.or(device.task_name.clone()),
         filename: device.filename,
@@ -311,6 +320,8 @@ mod tests {
             id: "printer-a".to_owned(),
             name: "Office X1".to_owned(),
             online: true,
+            service_status: crate::mqtt::MqttConnectionStatus::Connected,
+            service_connected: true,
             is_printing: true,
             title: Some("Calibration cube".to_owned()),
             task_name: Some("Calibration cube".to_owned()),
@@ -340,6 +351,9 @@ mod tests {
         });
 
         assert_eq!(device.name, "Office X1");
+        assert_eq!(device.service_status, "connected");
+        assert!(device.service_connected);
+        assert_eq!(device.service_error, None);
         assert_eq!(device.title.as_deref(), Some("Calibration cube"));
         assert_eq!(device.task_source, "printer status");
         assert_eq!(device.progress, Some(25.0));
