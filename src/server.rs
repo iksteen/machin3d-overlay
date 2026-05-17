@@ -1,4 +1,7 @@
+use std::time::Duration;
+
 use anyhow::Result;
+use tracing::warn;
 
 use crate::{
     bambu::{MQTT_HOST, MQTT_PORT},
@@ -14,6 +17,7 @@ use crate::{
 
 pub(crate) const DEFAULT_HOST: &str = "127.0.0.1";
 pub(crate) const DEFAULT_PORT: u16 = 8765;
+const SHUTDOWN_GRACE: Duration = Duration::from_secs(5);
 
 #[derive(Clone)]
 pub(crate) struct ServerConfig {
@@ -55,7 +59,6 @@ pub(crate) async fn serve(cloud: Option<CloudSession>, config: ServerConfig) -> 
         video_endpoints.endpoint_map,
     )?;
     let video_watcher = video.clone();
-    let video_shutdown = video.clone();
     let thumbnail = ThumbnailRuntime::new(mqtt.clone(), cloud.clone(), registry.clone());
     let thumbnail_watcher = thumbnail.clone();
     let local_devices = registry.local_devices();
@@ -93,14 +96,50 @@ pub(crate) async fn serve(cloud: Option<CloudSession>, config: ServerConfig) -> 
     let server = serve_http(config.bind, state, shutdown.clone());
     tokio::pin!(server);
 
-    let result = tokio::select! {
-        result = &mut server => result,
-        result = tasks.wait_for_failure() => result,
-        _ = wait_for_process_shutdown_signal() => {
-            shutdown.trigger();
-            server.await
-        }
+    let (mut result, server_finished) = match tokio::select! {
+        result = &mut server => ServeStop::Server(result),
+        result = tasks.wait_for_failure() => ServeStop::Background(result),
+        _ = wait_for_process_shutdown_signal() => ServeStop::Signal,
+    } {
+        ServeStop::Server(result) => (result, true),
+        ServeStop::Background(result) => (result, false),
+        ServeStop::Signal => (Ok(()), false),
     };
-    video_shutdown.abort_workers().await;
+
+    shutdown.trigger();
+
+    if !server_finished {
+        result = combine_shutdown_result(result, (&mut server).await, "HTTP server");
+    }
+    result = combine_shutdown_result(
+        result,
+        tasks.shutdown(SHUTDOWN_GRACE).await,
+        "background tasks",
+    );
     result
+}
+
+enum ServeStop {
+    Server(Result<()>),
+    Background(Result<()>),
+    Signal,
+}
+
+fn combine_shutdown_result(
+    primary: Result<()>,
+    shutdown_result: Result<()>,
+    label: &str,
+) -> Result<()> {
+    match (primary, shutdown_result) {
+        (Ok(()), Ok(())) => Ok(()),
+        (Ok(()), Err(error)) => Err(error),
+        (Err(error), Ok(())) => Err(error),
+        (Err(primary), Err(shutdown_error)) => {
+            warn!(
+                error = %shutdown_error,
+                "{label} shutdown failed after an earlier service error"
+            );
+            Err(primary)
+        }
+    }
 }

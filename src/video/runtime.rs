@@ -125,23 +125,24 @@ impl VideoRuntime {
 
         loop {
             tokio::select! {
-                _ = shutdown.cancelled() => break,
+                _ = shutdown.cancelled() => {
+                    self.abort_workers().await;
+                    while let Some(result) = workers.join_next().await {
+                        log_worker_observer_result(result);
+                    }
+                    break;
+                }
                 Some(task) = worker_rx.recv() => {
                     workers.spawn(observe_worker(task));
                 }
                 Some(result) = workers.join_next(), if !workers.is_empty() => {
-                    match result {
-                        Ok(exit) => exit.log(),
-                        Err(error) => {
-                            error!(%error, "video worker observer task failed");
-                        }
-                    }
+                    log_worker_observer_result(result);
                 }
             }
         }
     }
 
-    pub(crate) async fn abort_workers(&self) {
+    async fn abort_workers(&self) {
         let streams = self
             .inner
             .streams
@@ -180,6 +181,17 @@ impl VideoRuntime {
         }
         *worker = Some(spawn_worker(&self.inner, &stream)?);
         Ok(())
+    }
+}
+
+fn log_worker_observer_result(
+    result: std::result::Result<self::worker::VideoWorkerExit, tokio::task::JoinError>,
+) {
+    match result {
+        Ok(exit) => exit.log(),
+        Err(error) => {
+            error!(%error, "video worker observer task failed");
+        }
     }
 }
 

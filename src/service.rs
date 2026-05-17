@@ -1,4 +1,4 @@
-use std::future::Future;
+use std::{future::Future, time::Duration};
 
 use anyhow::{anyhow, Result};
 use tokio::{
@@ -9,7 +9,7 @@ use tracing::{info, warn};
 
 pub(crate) struct ServiceTasks {
     aborts: Vec<AbortHandle>,
-    monitors: JoinSet<TaskFailure>,
+    monitors: JoinSet<TaskExit>,
 }
 
 #[derive(Clone)]
@@ -21,9 +21,16 @@ pub(crate) struct ShutdownReceiver {
     receiver: watch::Receiver<bool>,
 }
 
-struct TaskFailure {
+struct TaskExit {
     name: String,
-    message: String,
+    status: TaskExitStatus,
+}
+
+enum TaskExitStatus {
+    Finished,
+    Cancelled,
+    Panicked(String),
+    Failed(String),
 }
 
 impl ServiceTasks {
@@ -42,33 +49,99 @@ impl ServiceTasks {
         let handle = tokio::spawn(future);
         self.aborts.push(handle.abort_handle());
         self.monitors.spawn(async move {
-            let message = match handle.await {
-                Ok(()) => "exited unexpectedly".to_owned(),
-                Err(error) if error.is_cancelled() => "was cancelled unexpectedly".to_owned(),
-                Err(error) if error.is_panic() => format!("panicked: {error}"),
-                Err(error) => format!("failed: {error}"),
+            let status = match handle.await {
+                Ok(()) => TaskExitStatus::Finished,
+                Err(error) if error.is_cancelled() => TaskExitStatus::Cancelled,
+                Err(error) if error.is_panic() => TaskExitStatus::Panicked(error.to_string()),
+                Err(error) => TaskExitStatus::Failed(error.to_string()),
             };
-            TaskFailure { name, message }
+            TaskExit { name, status }
         });
     }
 
     pub(crate) async fn wait_for_failure(&mut self) -> Result<()> {
         match self.monitors.join_next().await {
-            Some(Ok(failure)) => Err(anyhow!(
-                "background task `{}` {}",
-                failure.name,
-                failure.message
-            )),
+            Some(Ok(exit)) => Err(exit.unexpected_error()),
             Some(Err(error)) => Err(anyhow!("background task monitor failed: {error}")),
             None => std::future::pending::<Result<()>>().await,
         }
+    }
+
+    pub(crate) async fn shutdown(&mut self, grace: Duration) -> Result<()> {
+        match tokio::time::timeout(grace, self.wait_for_completion()).await {
+            Ok(result) => result,
+            Err(_) => {
+                warn!(
+                    timeout_ms = grace.as_millis(),
+                    "background tasks did not stop during shutdown grace period; aborting"
+                );
+                self.abort_all();
+                match tokio::time::timeout(grace, self.wait_for_completion()).await {
+                    Ok(result) => result,
+                    Err(_) => {
+                        warn!(
+                            timeout_ms = grace.as_millis(),
+                            "background task monitors did not finish after abort"
+                        );
+                        Ok(())
+                    }
+                }
+            }
+        }
+    }
+
+    async fn wait_for_completion(&mut self) -> Result<()> {
+        while let Some(result) = self.monitors.join_next().await {
+            match result {
+                Ok(exit) => exit.shutdown_result()?,
+                Err(error) => return Err(anyhow!("background task monitor failed: {error}")),
+            }
+        }
+        self.aborts.clear();
+        Ok(())
+    }
+
+    fn abort_all(&mut self) {
+        for abort in &self.aborts {
+            abort.abort();
+        }
+        self.aborts.clear();
     }
 }
 
 impl Drop for ServiceTasks {
     fn drop(&mut self) {
-        for abort in &self.aborts {
-            abort.abort();
+        self.abort_all();
+    }
+}
+
+impl TaskExit {
+    fn unexpected_error(self) -> anyhow::Error {
+        match self.status {
+            TaskExitStatus::Finished => {
+                anyhow!("background task `{}` exited unexpectedly", self.name)
+            }
+            TaskExitStatus::Cancelled => {
+                anyhow!("background task `{}` was cancelled unexpectedly", self.name)
+            }
+            TaskExitStatus::Panicked(error) => {
+                anyhow!("background task `{}` panicked: {error}", self.name)
+            }
+            TaskExitStatus::Failed(error) => {
+                anyhow!("background task `{}` failed: {error}", self.name)
+            }
+        }
+    }
+
+    fn shutdown_result(self) -> Result<()> {
+        match self.status {
+            TaskExitStatus::Finished | TaskExitStatus::Cancelled => Ok(()),
+            TaskExitStatus::Panicked(error) => {
+                Err(anyhow!("background task `{}` panicked: {error}", self.name))
+            }
+            TaskExitStatus::Failed(error) => {
+                Err(anyhow!("background task `{}` failed: {error}", self.name))
+            }
         }
     }
 }
@@ -180,6 +253,49 @@ mod tests {
         tokio::time::timeout(Duration::from_secs(1), dropped_rx)
             .await
             .expect("task should be aborted")
+            .expect("drop notification should be sent");
+    }
+
+    #[tokio::test]
+    async fn shutdown_waits_for_cooperative_tasks() {
+        let shutdown = Shutdown::new();
+        let mut receiver = shutdown.subscribe();
+        let mut tasks = ServiceTasks::new();
+        tasks.spawn("cooperative task", async move {
+            receiver.cancelled().await;
+        });
+
+        shutdown.trigger();
+
+        tokio::time::timeout(
+            Duration::from_secs(1),
+            tasks.shutdown(Duration::from_secs(1)),
+        )
+        .await
+        .expect("shutdown should not hang")
+        .expect("cooperative task should stop cleanly");
+    }
+
+    #[tokio::test]
+    async fn shutdown_aborts_tasks_after_grace_period() {
+        let (started_tx, started_rx) = oneshot::channel();
+        let (dropped_tx, dropped_rx) = oneshot::channel();
+        let mut tasks = ServiceTasks::new();
+        tasks.spawn("stuck task", async move {
+            let _notify = NotifyOnDrop(Some(dropped_tx));
+            let _ = started_tx.send(());
+            std::future::pending::<()>().await;
+        });
+
+        started_rx.await.expect("task should start");
+
+        tasks
+            .shutdown(Duration::from_millis(1))
+            .await
+            .expect("aborted task should be accepted during shutdown");
+        tokio::time::timeout(Duration::from_secs(1), dropped_rx)
+            .await
+            .expect("task should be aborted after grace timeout")
             .expect("drop notification should be sent");
     }
 
