@@ -1,4 +1,5 @@
 mod archive;
+mod cache;
 mod cloud;
 mod local;
 mod readiness;

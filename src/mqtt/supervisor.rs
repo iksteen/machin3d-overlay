@@ -4,7 +4,7 @@ use anyhow::Result;
 use serde::Deserialize;
 use tracing::{debug, warn};
 
-use crate::bambu::PrinterStatus;
+use crate::{bambu::PrinterStatus, service::ShutdownReceiver};
 
 use super::{
     session::{ReportEvent, ReportSession},
@@ -27,40 +27,79 @@ impl ReportPayload {
     }
 }
 
-pub(crate) async fn supervise_target(runtime: MqttRuntime, target: MqttTarget) {
+pub(crate) async fn supervise_target(
+    runtime: MqttRuntime,
+    target: MqttTarget,
+    mut shutdown: ShutdownReceiver,
+) {
     runtime
         .register_connection(target.connection_key(), target.device_ids())
         .await;
     let mut delay = Duration::from_secs(2);
     loop {
-        match run_runtime_once(&runtime, &target).await {
-            Ok(()) => delay = Duration::from_secs(2),
+        match run_runtime_once(&runtime, &target, &mut shutdown).await {
+            Ok(RunResult::Disconnected) => delay = Duration::from_secs(2),
+            Ok(RunResult::Shutdown) => return,
             Err(error) => {
                 runtime
                     .set_connection_error(target.connection_key(), error.to_string())
                     .await;
                 target.warn_disconnect(&error, "MQTT disconnected");
-                tokio::time::sleep(delay).await;
+                if sleep_or_shutdown(delay, &mut shutdown).await {
+                    return;
+                }
                 delay = (delay + delay / 2).min(Duration::from_secs(30));
             }
         }
     }
 }
 
-async fn run_runtime_once(runtime: &MqttRuntime, target: &MqttTarget) -> Result<()> {
+enum RunResult {
+    Disconnected,
+    Shutdown,
+}
+
+async fn run_runtime_once(
+    runtime: &MqttRuntime,
+    target: &MqttTarget,
+    shutdown: &mut ShutdownReceiver,
+) -> Result<RunResult> {
     let connection_key = target.connection_key();
     runtime
         .set_connection_connecting(connection_key.clone())
         .await;
-    let mut session = ReportSession::connect(target).await?;
+    let mut session = tokio::select! {
+        session = ReportSession::connect(target) => session?,
+        _ = shutdown.cancelled() => {
+            runtime.set_connection_disconnected(connection_key).await;
+            return Ok(RunResult::Shutdown);
+        }
+    };
     runtime
         .set_connection_connected(connection_key.clone())
         .await;
-    while let Some(event) = session.next().await? {
+    loop {
+        let event = tokio::select! {
+            event = session.next() => event?,
+            _ = shutdown.cancelled() => {
+                runtime.set_connection_disconnected(connection_key).await;
+                return Ok(RunResult::Shutdown);
+            }
+        };
+        let Some(event) = event else {
+            break;
+        };
         handle_publish(runtime, event).await;
     }
     runtime.set_connection_disconnected(connection_key).await;
-    Ok(())
+    Ok(RunResult::Disconnected)
+}
+
+async fn sleep_or_shutdown(delay: Duration, shutdown: &mut ShutdownReceiver) -> bool {
+    tokio::select! {
+        _ = tokio::time::sleep(delay) => false,
+        _ = shutdown.cancelled() => true,
+    }
 }
 
 async fn handle_publish(runtime: &MqttRuntime, event: ReportEvent) {

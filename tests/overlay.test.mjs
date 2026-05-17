@@ -1,0 +1,181 @@
+import assert from "node:assert/strict";
+import fs from "node:fs";
+import test from "node:test";
+import vm from "node:vm";
+
+const overlayScript = fs.readFileSync(new URL("../assets/static/overlay.js", import.meta.url), "utf8");
+
+class FakeClassList {
+  constructor(element) {
+    this.element = element;
+  }
+
+  add(...names) {
+    const classes = new Set(this.element.className.split(/\s+/).filter(Boolean));
+    for (const name of names) {
+      classes.add(name);
+    }
+    this.element.className = [...classes].join(" ");
+  }
+
+  remove(...names) {
+    const remove = new Set(names);
+    this.element.className = this.element.className
+      .split(/\s+/)
+      .filter((name) => name && !remove.has(name))
+      .join(" ");
+  }
+
+  toggle(name, force) {
+    const enabled = force == null ? !this.element.className.split(/\s+/).includes(name) : Boolean(force);
+    if (enabled) {
+      this.add(name);
+    } else {
+      this.remove(name);
+    }
+    return enabled;
+  }
+}
+
+class FakeElement {
+  constructor(tagName = "div") {
+    this.tagName = tagName.toUpperCase();
+    this.children = [];
+    this.className = "";
+    this.hidden = false;
+    this.textContent = "";
+    this.innerHTML = "";
+    this.style = { setProperty: (name, value) => (this.style[name] = value) };
+    this.attributes = new Map();
+    this.classList = new FakeClassList(this);
+  }
+
+  append(...children) {
+    this.children.push(...children);
+  }
+
+  replaceChildren(...children) {
+    this.children = children;
+    if (children.length > 0) {
+      this.textContent = "";
+    }
+  }
+
+  setAttribute(name, value) {
+    this.attributes.set(name, String(value));
+    this[name] = String(value);
+  }
+
+  removeAttribute(name) {
+    this.attributes.delete(name);
+    delete this[name];
+  }
+
+  querySelectorAll(selector) {
+    if (selector !== "img") {
+      return [];
+    }
+    return this.children.filter((child) => child?.tagName === "IMG");
+  }
+
+  remove() {
+    this.removed = true;
+  }
+}
+
+function loadOverlay() {
+  const elements = new Map();
+  const document = {
+    createElement: (tagName) => new FakeElement(tagName),
+    getElementById: (id) => {
+      if (id === "overlay-config") {
+        return { textContent: "{}" };
+      }
+      if (!elements.has(id)) {
+        elements.set(id, new FakeElement());
+      }
+      return elements.get(id);
+    },
+  };
+
+  class FakeEventSource {
+    static CLOSED = 2;
+
+    constructor(url) {
+      this.url = url;
+      this.readyState = 0;
+      this.listeners = new Map();
+    }
+
+    addEventListener(name, listener) {
+      this.listeners.set(name, listener);
+    }
+  }
+
+  const revokedUrls = [];
+  const context = {
+    EventSource: FakeEventSource,
+    Image: class FakeImage extends FakeElement {
+      constructor() {
+        super("img");
+      }
+    },
+    URL: {
+      createObjectURL: () => "blob:test",
+      revokeObjectURL: (url) => revokedUrls.push(url),
+    },
+    URLSearchParams,
+    document,
+    fetch: () => Promise.reject(new Error("unexpected fetch")),
+    requestAnimationFrame: (callback) => callback(),
+    setTimeout,
+    window: {
+      __bambuOverlayEnableTestHooks: true,
+      clearTimeout,
+      EventSource: FakeEventSource,
+      location: { search: "" },
+      setTimeout,
+    },
+  };
+  context.window.URL = context.URL;
+  context.window.document = document;
+
+  vm.runInNewContext(overlayScript, context);
+  return { ...context.window.__bambuOverlayTest, revokedUrls };
+}
+
+test("renderThumb clears an existing thumbnail when the next status is missing", () => {
+  const { state, renderThumb, revokedUrls } = loadOverlay();
+  state.thumbUrl = "/api/thumbnail?device=printer-a";
+  state.thumbPendingUrl = null;
+  state.thumbObjectUrl = "blob:old";
+  state.thumbSlot.replaceChildren(new FakeElement("img"));
+
+  renderThumb(null);
+
+  assert.equal(state.thumbUrl, null);
+  assert.equal(state.thumbPendingUrl, null);
+  assert.equal(state.thumbObjectUrl, null);
+  assert.equal(state.thumbSlot.textContent, "3D");
+  assert.match(state.thumbSlot.className, /(^|\s)is-empty(\s|$)/);
+  assert.deepEqual(revokedUrls, ["blob:old"]);
+});
+
+test("renderConnectionBubble exposes printer connection freshness", () => {
+  const { state, renderConnectionBubble } = loadOverlay();
+  const bubble = state.connectionBubble;
+
+  renderConnectionBubble({ serviceStatus: "connecting" });
+  assert.equal(bubble.hidden, false);
+  assert.equal(bubble.textContent, "Printer connecting");
+  assert.equal(bubble.title, undefined);
+
+  renderConnectionBubble({ serviceStatus: "disconnected", serviceError: "No route to host" });
+  assert.equal(bubble.hidden, false);
+  assert.equal(bubble.textContent, "Printer disconnected");
+  assert.equal(bubble.title, "No route to host");
+
+  renderConnectionBubble({ serviceStatus: "connected" });
+  assert.equal(bubble.hidden, true);
+  assert.equal(bubble.title, undefined);
+});

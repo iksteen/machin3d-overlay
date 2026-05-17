@@ -363,5 +363,13 @@
     };
   }
 
+  if (window.__bambuOverlayEnableTestHooks) {
+    window.__bambuOverlayTest = {
+      state,
+      renderConnectionBubble,
+      renderThumb,
+    };
+  }
+
   connectEvents();
 })();

@@ -51,13 +51,13 @@ pub(crate) struct Spool {
     pub(crate) active: bool,
 }
 
-struct DeviceFields<'a> {
+struct DeviceSnapshot<'a> {
     device: &'a KnownDevice,
     live: Option<&'a MqttDeviceState>,
     connection: Option<&'a MqttDeviceConnection>,
 }
 
-impl<'a> DeviceFields<'a> {
+impl<'a> DeviceSnapshot<'a> {
     fn new(
         device: &'a KnownDevice,
         live: Option<&'a MqttDeviceState>,
@@ -181,18 +181,20 @@ impl<'a> DeviceFields<'a> {
     fn start_time(&self) -> Option<String> {
         self.active_string(|print| print.start_time.as_ref())
     }
+}
 
-    fn summary(&self) -> DeviceSummary {
-        let device_id = self.device_id();
-        let task_id = self.task_id();
-        let task_name = self.task_name();
-        let task_status = self.task_status();
-        let progress = self.progress();
-        let prediction = self.prediction();
-        let start_time = self.start_time();
-        let filename = self.active_string(|print| print.filename.as_ref());
-        let active_tray = self.active_tray();
-        let is_printing = self.active_status().is_some();
+impl DeviceSummary {
+    fn from_snapshot(snapshot: DeviceSnapshot<'_>) -> Self {
+        let device_id = snapshot.device_id();
+        let task_id = snapshot.task_id();
+        let task_name = snapshot.task_name();
+        let task_status = snapshot.task_status();
+        let progress = snapshot.progress();
+        let prediction = snapshot.prediction();
+        let start_time = snapshot.start_time();
+        let filename = snapshot.active_string(|print| print.filename.as_ref());
+        let active_tray = snapshot.active_tray();
+        let is_printing = snapshot.active_status().is_some();
         let thumbnail_task = thumbnail_task(
             is_printing,
             task_id.as_deref(),
@@ -203,15 +205,15 @@ impl<'a> DeviceFields<'a> {
 
         DeviceSummary {
             id: device_id,
-            name: self
+            name: snapshot
                 .device
                 .name
                 .clone()
                 .unwrap_or_else(|| "Bambu printer".to_owned()),
-            online: self.device.online.unwrap_or(true),
-            service_status: self.service_status(),
-            service_connected: self.service_connected(),
-            service_error: self
+            online: snapshot.device.online.unwrap_or(true),
+            service_status: snapshot.service_status(),
+            service_connected: snapshot.service_connected(),
+            service_error: snapshot
                 .connection()
                 .and_then(|connection| connection.error.clone()),
             task_name: task_name.clone(),
@@ -222,18 +224,18 @@ impl<'a> DeviceFields<'a> {
             prediction,
             progress,
             thumbnail_task,
-            weight: self.active_string(|print| print.weight.as_ref()),
-            layer_current: self.active_i64(|print| print.layer_current),
-            layer_total: self.active_i64(|print| print.layer_total),
-            remaining_seconds: self
+            weight: snapshot.active_string(|print| print.weight.as_ref()),
+            layer_current: snapshot.active_i64(|print| print.layer_current),
+            layer_total: snapshot.active_i64(|print| print.layer_total),
+            remaining_seconds: snapshot
                 .active_f64(|print| print.remaining_minutes)
                 .map(|minutes| minutes * 60.0),
-            toolhead_temperature: self.print_f64(|print| print.toolhead_temperature),
-            bed_temperature: self.print_f64(|print| print.bed_temperature),
-            fan_speed: self.print_f64(|print| print.fan_speed),
-            print_mode: self.display_mode(),
-            ams_spools: ams_spools(self.ams(), active_tray),
-            external_spool: external_spool(self.external_tray(), active_tray),
+            toolhead_temperature: snapshot.print_f64(|print| print.toolhead_temperature),
+            bed_temperature: snapshot.print_f64(|print| print.bed_temperature),
+            fan_speed: snapshot.print_f64(|print| print.fan_speed),
+            print_mode: snapshot.display_mode(),
+            ams_spools: ams_spools(snapshot.ams(), active_tray),
+            external_spool: external_spool(snapshot.external_tray(), active_tray),
             is_printing,
             task_source: TaskSource::PrinterStatus,
             plate_index: None,
@@ -259,8 +261,7 @@ fn summarize_device(
 ) -> DeviceSummary {
     let state = states.get(&device.id);
     let connection = connections.get(&device.id);
-    let fields = DeviceFields::new(device, state, connection);
-    fields.summary()
+    DeviceSummary::from_snapshot(DeviceSnapshot::new(device, state, connection))
 }
 
 fn thumbnail_task(

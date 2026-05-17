@@ -62,25 +62,31 @@ pub(crate) async fn serve(cloud: Option<CloudSession>, config: ServerConfig) -> 
     let state = app_state(mqtt.clone(), registry, video, thumbnail, shutdown.clone());
 
     let mut tasks = ServiceTasks::new();
+    let video_watcher_shutdown = shutdown.subscribe();
     tasks.spawn("video worker watcher", async move {
-        video_watcher.watch_workers().await;
+        video_watcher.watch_workers(video_watcher_shutdown).await;
     });
+    let thumbnail_shutdown = shutdown.subscribe();
     tasks.spawn("thumbnail watcher", async move {
-        thumbnail_watcher.watch_task_changes().await;
+        thumbnail_watcher
+            .watch_task_changes(thumbnail_shutdown)
+            .await;
     });
 
     if let Some(cloud_mqtt) = cloud_mqtt {
+        let mqtt_shutdown = shutdown.subscribe();
         tasks.spawn(
             "cloud MQTT supervisor",
-            supervise_target(mqtt.clone(), cloud_mqtt.into_target()),
+            supervise_target(mqtt.clone(), cloud_mqtt.into_target(), mqtt_shutdown),
         );
     }
 
     for device in local_devices {
         let task_name = format!("local MQTT supervisor ({})", device.id);
+        let mqtt_shutdown = shutdown.subscribe();
         tasks.spawn(
             task_name,
-            supervise_target(mqtt.clone(), MqttTarget::local(device)),
+            supervise_target(mqtt.clone(), MqttTarget::local(device), mqtt_shutdown),
         );
     }
 

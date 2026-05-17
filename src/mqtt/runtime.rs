@@ -16,12 +16,17 @@ pub struct MqttRuntime {
 
 #[derive(Default)]
 struct MqttState {
-    reports: HashMap<String, MqttReportState>,
+    devices: HashMap<String, DeviceLiveState>,
     connections: HashMap<String, MqttConnectionState>,
-    device_connections: HashMap<String, String>,
     connected: bool,
     error: Option<String>,
     updated_at: Option<String>,
+}
+
+#[derive(Default)]
+struct DeviceLiveState {
+    connection_key: Option<String>,
+    report: Option<MqttReportState>,
 }
 
 struct MqttReportState {
@@ -77,28 +82,25 @@ impl MqttRuntime {
     pub(crate) async fn snapshot(&self) -> MqttSnapshot {
         let state = self.inner.read().await;
         let connections = state
-            .device_connections
+            .devices
             .iter()
-            .map(|(device_id, key)| {
-                (
+            .filter_map(|(device_id, device)| {
+                let connection_key = device.connection_key.clone()?;
+                Some((
                     device_id.clone(),
-                    connection_state(Some(key.clone()), &state.connections),
-                )
+                    connection_state(Some(connection_key), &state.connections),
+                ))
             })
             .collect::<HashMap<_, _>>();
         let devices = state
-            .reports
+            .devices
             .iter()
-            .map(|(device_id, report)| {
-                (
+            .filter_map(|(device_id, device)| {
+                let report = device.report.as_ref()?;
+                Some((
                     device_id.clone(),
-                    device_state(
-                        device_id,
-                        report,
-                        &state.connections,
-                        &state.device_connections,
-                    ),
-                )
+                    device_state(device, report, &state.connections),
+                ))
             })
             .collect();
 
@@ -131,19 +133,26 @@ impl MqttRuntime {
             .or_default()
             .device_ids
             .clone();
+        let mut remove_devices = Vec::new();
         for device_id in previous_device_ids {
-            if state
-                .device_connections
-                .get(&device_id)
-                .is_some_and(|existing_key| existing_key == &key)
-            {
-                state.device_connections.remove(&device_id);
+            if let Some(device) = state.devices.get_mut(&device_id) {
+                if device.connection_key.as_deref() == Some(key.as_str()) {
+                    device.connection_key = None;
+                    if device.report.is_none() {
+                        remove_devices.push(device_id);
+                    }
+                }
             }
+        }
+        for device_id in remove_devices {
+            state.devices.remove(&device_id);
         }
         for device_id in &device_ids {
             state
-                .device_connections
-                .insert(device_id.clone(), key.clone());
+                .devices
+                .entry(device_id.clone())
+                .or_default()
+                .connection_key = Some(key.clone());
         }
         state.connections.entry(key).or_default().device_ids = device_ids;
     }
@@ -196,20 +205,17 @@ impl MqttRuntime {
     pub(crate) async fn merge_report(&self, device_id: &str, report: PrinterStatus) {
         let mut state = self.inner.write().await;
         let now = Utc::now();
-        let activity = match state.reports.entry(device_id.to_owned()) {
-            std::collections::hash_map::Entry::Occupied(mut entry) => {
-                let report_state = entry.get_mut();
-                report_state.report.merge(report);
-                report_state.last_report_at = now;
-                PrintActivity::from_report(&report_state.report)
-            }
-            std::collections::hash_map::Entry::Vacant(entry) => {
-                let report_state = entry.insert(MqttReportState {
-                    report,
-                    last_report_at: now,
-                });
-                PrintActivity::from_report(&report_state.report)
-            }
+        let device = state.devices.entry(device_id.to_owned()).or_default();
+        let activity = if let Some(report_state) = &mut device.report {
+            report_state.report.merge(report);
+            report_state.last_report_at = now;
+            PrintActivity::from_report(&report_state.report)
+        } else {
+            let report_state = device.report.insert(MqttReportState {
+                report,
+                last_report_at: now,
+            });
+            PrintActivity::from_report(&report_state.report)
         };
         if let PrintActivity::Unknown(gcode_state) = activity {
             tracing::debug!(
@@ -230,13 +236,15 @@ impl MqttRuntime {
 }
 
 fn device_state(
-    device_id: &str,
+    device: &DeviceLiveState,
     report: &MqttReportState,
     connections: &HashMap<String, MqttConnectionState>,
-    device_connections: &HashMap<String, String>,
 ) -> MqttDeviceState {
-    let key = device_connections.get(device_id).cloned();
-    let connection = connection_state_for_report(key, Some(report.last_report_at), connections);
+    let connection = connection_state_for_report(
+        device.connection_key.clone(),
+        Some(report.last_report_at),
+        connections,
+    );
 
     MqttDeviceState::from_snapshot(
         report.report.clone(),
