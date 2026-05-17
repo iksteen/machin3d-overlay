@@ -140,11 +140,11 @@ fn parse_thumbnail_relationships(xml: &str) -> Result<Vec<ThumbnailRelationship>
             .read_event()
             .context("failed to parse 3MF relationships")?
         {
-            Event::Empty(element) | Event::Start(element) => {
-                if element.local_name().as_ref() == b"Relationship" {
-                    if let Some(relationship) = parse_thumbnail_relationship(&reader, &element)? {
-                        relationships.push(relationship);
-                    }
+            Event::Empty(element) | Event::Start(element)
+                if element.local_name().as_ref() == b"Relationship" =>
+            {
+                if let Some(relationship) = parse_thumbnail_relationship(&reader, &element)? {
+                    relationships.push(relationship);
                 }
             }
             Event::Eof => break,

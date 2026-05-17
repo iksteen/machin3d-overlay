@@ -161,7 +161,7 @@ mod tests {
         handle_publish(&runtime, report_event(true)).await;
 
         let snapshot = runtime.snapshot().await;
-        assert!(snapshot.devices.get("printer-a").is_none());
+        assert!(!snapshot.devices.contains_key("printer-a"));
         assert_eq!(
             snapshot.connections.get("printer-a").unwrap().status,
             MqttConnectionStatus::Connecting

@@ -16,6 +16,7 @@ pub struct MqttRuntime {
 
 #[derive(Default)]
 struct MqttState {
+    revision: u64,
     devices: HashMap<String, DeviceLiveState>,
     connections: HashMap<String, MqttConnectionState>,
     connected: bool,
@@ -61,6 +62,7 @@ pub struct MqttStatusPayload {
 
 #[derive(Debug, Clone)]
 pub(crate) struct MqttSnapshot {
+    pub(crate) revision: u64,
     pub(crate) devices: HashMap<String, MqttDeviceState>,
     pub(crate) connections: HashMap<String, MqttDeviceConnection>,
     pub(crate) status: MqttStatusPayload,
@@ -105,14 +107,11 @@ impl MqttRuntime {
             .collect();
 
         MqttSnapshot {
+            revision: state.revision,
             devices,
             connections,
             status: status_payload(&state),
         }
-    }
-
-    pub(crate) async fn live_states(&self) -> HashMap<String, MqttDeviceState> {
-        self.snapshot().await.devices
     }
 
     pub async fn status(&self) -> MqttStatusPayload {
@@ -155,6 +154,7 @@ impl MqttRuntime {
                 .connection_key = Some(key.clone());
         }
         state.connections.entry(key).or_default().device_ids = device_ids;
+        bump_revision(&mut state);
     }
 
     pub(crate) async fn set_connection_connecting(&self, key: impl Into<String>) {
@@ -162,6 +162,7 @@ impl MqttRuntime {
         let connection = state.connections.entry(key.into()).or_default();
         connection.status = MqttTransportStatus::Connecting;
         connection.error = None;
+        bump_revision(&mut state);
         refresh_status(&mut state);
         drop(state);
         self.notify();
@@ -174,15 +175,19 @@ impl MqttRuntime {
             connected_at: Utc::now(),
         };
         connection.error = None;
+        bump_revision(&mut state);
         refresh_status(&mut state);
         drop(state);
         self.notify();
     }
 
     pub(crate) async fn set_connection_disconnected(&self, key: impl Into<String>) {
+        let key = key.into();
         let mut state = self.inner.write().await;
-        let connection = state.connections.entry(key.into()).or_default();
+        let connection = state.connections.entry(key.clone()).or_default();
         connection.status = MqttTransportStatus::Disconnected;
+        clear_reports_for_connection(&mut state, &key);
+        bump_revision(&mut state);
         refresh_status(&mut state);
         drop(state);
         self.notify();
@@ -193,10 +198,13 @@ impl MqttRuntime {
         key: impl Into<String>,
         error: impl Into<String>,
     ) {
+        let key = key.into();
         let mut state = self.inner.write().await;
-        let connection = state.connections.entry(key.into()).or_default();
+        let connection = state.connections.entry(key.clone()).or_default();
         connection.status = MqttTransportStatus::Disconnected;
         connection.error = Some(error.into());
+        clear_reports_for_connection(&mut state, &key);
+        bump_revision(&mut state);
         refresh_status(&mut state);
         drop(state);
         self.notify();
@@ -225,6 +233,7 @@ impl MqttRuntime {
             );
         }
         state.updated_at = Some(now.to_rfc3339());
+        bump_revision(&mut state);
         refresh_status(&mut state);
         drop(state);
         self.notify();
@@ -296,12 +305,24 @@ fn device_connection_status(
     }
 }
 
+fn clear_reports_for_connection(state: &mut MqttState, key: &str) {
+    for device in state.devices.values_mut() {
+        if device.connection_key.as_deref() == Some(key) {
+            device.report = None;
+        }
+    }
+}
+
 fn status_payload(state: &MqttState) -> MqttStatusPayload {
     MqttStatusPayload {
         connected: state.connected,
         error: state.error.clone(),
         updated_at: state.updated_at.clone(),
     }
+}
+
+fn bump_revision(state: &mut MqttState) {
+    state.revision = state.revision.saturating_add(1);
 }
 
 fn refresh_status(state: &mut MqttState) {
@@ -376,22 +397,16 @@ mod tests {
         runtime.set_connection_disconnected("printer-a").await;
 
         let snapshot = runtime.snapshot().await;
-        let state = snapshot.devices.get("printer-a").unwrap();
         let connection = snapshot.connections.get("printer-a").unwrap();
-        assert!(!state.is_fresh());
-        assert!(!state.is_active_task());
-        assert_eq!(state.connection.status, MqttConnectionStatus::Disconnected);
+        assert!(!snapshot.devices.contains_key("printer-a"));
         assert_eq!(connection.status, MqttConnectionStatus::Disconnected);
         assert!(!snapshot.status.connected);
 
         runtime.set_connection_connected("printer-a").await;
 
         let snapshot = runtime.snapshot().await;
-        let state = snapshot.devices.get("printer-a").unwrap();
         let connection = snapshot.connections.get("printer-a").unwrap();
-        assert!(!state.is_fresh());
-        assert!(!state.is_active_task());
-        assert_eq!(state.connection.status, MqttConnectionStatus::Connecting);
+        assert!(!snapshot.devices.contains_key("printer-a"));
         assert_eq!(connection.status, MqttConnectionStatus::Connecting);
 
         runtime
@@ -409,5 +424,43 @@ mod tests {
         assert!(state.is_fresh());
         assert!(state.is_active_task());
         assert_eq!(state.connection.status, MqttConnectionStatus::Connected);
+    }
+
+    #[tokio::test]
+    async fn report_is_cleared_on_disconnect_and_replaced_after_reconnect() {
+        let runtime = MqttRuntime::new();
+        runtime
+            .register_connection("printer-a", vec!["printer-a".to_owned()])
+            .await;
+        runtime.set_connection_connected("printer-a").await;
+        runtime
+            .merge_report(
+                "printer-a",
+                PrinterStatus {
+                    task_name: Some("old".to_owned()),
+                    ..PrinterStatus::default()
+                },
+            )
+            .await;
+
+        runtime.set_connection_disconnected("printer-a").await;
+
+        let disconnected = runtime.snapshot().await;
+        assert!(!disconnected.devices.contains_key("printer-a"));
+
+        runtime.set_connection_connected("printer-a").await;
+        runtime
+            .merge_report(
+                "printer-a",
+                PrinterStatus {
+                    task_name: Some("new".to_owned()),
+                    ..PrinterStatus::default()
+                },
+            )
+            .await;
+
+        let snapshot = runtime.snapshot().await;
+        let state = snapshot.devices.get("printer-a").unwrap();
+        assert_eq!(state.report.task_name.as_deref(), Some("new"));
     }
 }

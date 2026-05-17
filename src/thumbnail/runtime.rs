@@ -4,7 +4,8 @@ use std::{
 };
 
 use anyhow::{ensure, Context, Result};
-use tracing::{debug, warn};
+use tokio::task::JoinSet;
+use tracing::{debug, error, warn};
 
 use crate::{
     bambu::PrinterStatus, cloud::CloudSession, devices::DeviceRegistry, mqtt::MqttRuntime,
@@ -12,8 +13,10 @@ use crate::{
 };
 
 use super::{
-    cache::{TaskKey, ThumbnailCache},
-    cloud, error_chain, local, ThumbnailStatus,
+    cache::TaskKey,
+    cloud, error_chain,
+    jobs::{JobCompletion, JobOrder, JobSchedule, JobStart, ThumbnailJob, ThumbnailJobs},
+    local, ThumbnailStatus,
 };
 
 const LOADING_RETRY_DELAY: Duration = Duration::from_secs(2);
@@ -28,7 +31,7 @@ struct ThumbnailInner {
     mqtt: MqttRuntime,
     cloud: Option<CloudSession>,
     registry: DeviceRegistry,
-    cache: ThumbnailCache,
+    jobs: ThumbnailJobs,
 }
 
 impl ThumbnailRuntime {
@@ -42,7 +45,7 @@ impl ThumbnailRuntime {
                 mqtt,
                 cloud,
                 registry,
-                cache: ThumbnailCache::new(),
+                jobs: ThumbnailJobs::new(),
             }),
         }
     }
@@ -57,80 +60,152 @@ impl ThumbnailRuntime {
         };
 
         self.refresh_device(&device_id).await?;
-        Ok(self.inner.cache.status(&device_id).await)
+        Ok(self.inner.jobs.status(&device_id).await)
     }
 
     pub(crate) async fn watch_task_changes(&self, mut shutdown: ShutdownReceiver) {
         let mut changes = self.inner.mqtt.subscribe();
+        let mut job_rx = self.inner.jobs.receiver.lock().await;
+        let mut jobs = JoinSet::new();
         self.refresh_changed_devices().await;
         loop {
             tokio::select! {
-                _ = shutdown.cancelled() => return,
+                _ = shutdown.cancelled() => {
+                    jobs.abort_all();
+                    while let Some(result) = jobs.join_next().await {
+                        log_thumbnail_job_result(result);
+                    }
+                    return;
+                }
                 received = changes.recv() => {
                     if received.is_err() {
                         changes = self.inner.mqtt.subscribe();
                     }
+                    self.refresh_changed_devices().await;
+                }
+                Some(job) = job_rx.recv() => {
+                    let runtime = self.clone();
+                    jobs.spawn(async move {
+                        runtime.run_fetch_job(job).await;
+                    });
+                }
+                Some(result) = jobs.join_next(), if !jobs.is_empty() => {
+                    log_thumbnail_job_result(result);
                 }
             }
-            self.refresh_changed_devices().await;
         }
     }
 
     async fn refresh_changed_devices(&self) {
-        let states = self.inner.mqtt.live_states().await;
+        let snapshot = self.inner.mqtt.snapshot().await;
+        let states = snapshot.devices;
         for device in self.inner.registry.devices() {
             let device_id = device.id.as_str();
             let Some(state) = states.get(device_id) else {
-                self.inner.cache.clear(device_id).await;
+                self.inner
+                    .jobs
+                    .clear(device_id, JobOrder::new(snapshot.revision))
+                    .await;
                 continue;
             };
             let Some(task) = TaskKey::from_state(state) else {
-                self.inner.cache.clear(device_id).await;
+                self.inner
+                    .jobs
+                    .clear(device_id, JobOrder::new(snapshot.revision))
+                    .await;
                 continue;
             };
-            if self.inner.cache.matches(device_id, &task).await {
-                continue;
-            }
-            if let Err(error) = self.fetch_and_cache(device_id, &state.report, task).await {
+            if let Err(error) = self
+                .schedule_fetch(
+                    device_id,
+                    &state.report,
+                    task,
+                    JobOrder::new(snapshot.revision),
+                )
+                .await
+            {
                 warn!(
                     device_id,
                     error = %error_chain(&error),
-                    "failed to refresh print thumbnail"
+                    "failed to schedule print thumbnail refresh"
                 );
             }
         }
     }
 
     async fn refresh_device(&self, device_id: &str) -> Result<()> {
-        let states = self.inner.mqtt.live_states().await;
+        let snapshot = self.inner.mqtt.snapshot().await;
+        let states = snapshot.devices;
         let Some(state) = states.get(device_id) else {
-            self.inner.cache.clear(device_id).await;
+            self.inner
+                .jobs
+                .clear(device_id, JobOrder::new(snapshot.revision))
+                .await;
             return Ok(());
         };
         let Some(task) = TaskKey::from_state(state) else {
-            self.inner.cache.clear(device_id).await;
+            self.inner
+                .jobs
+                .clear(device_id, JobOrder::new(snapshot.revision))
+                .await;
             return Ok(());
         };
-        if self.inner.cache.matches(device_id, &task).await {
-            return Ok(());
-        }
-        self.fetch_and_cache(device_id, &state.report, task).await
+        self.schedule_fetch(
+            device_id,
+            &state.report,
+            task,
+            JobOrder::new(snapshot.revision),
+        )
+        .await
     }
 
-    async fn fetch_and_cache(
+    async fn schedule_fetch(
         &self,
         device_id: &str,
         report: &PrinterStatus,
         task: TaskKey,
+        order: JobOrder,
     ) -> Result<()> {
-        let fetch_lock = self.inner.cache.fetch_lock(device_id).await;
-        let _guard = fetch_lock.lock().await;
-
-        if self.inner.cache.matches(device_id, &task).await {
+        let scheduled = self
+            .inner
+            .jobs
+            .schedule(device_id.to_owned(), task.clone(), report.clone(), order)
+            .await;
+        if matches!(scheduled, JobSchedule::Unchanged) {
             return Ok(());
         }
 
-        let (status, retry_after) = match self.fetch_thumbnail(device_id, report).await {
+        if let JobSchedule::Start(job) = scheduled {
+            if let Err(error) = self.inner.jobs.send(*job) {
+                self.inner
+                    .jobs
+                    .send_failed(
+                        device_id,
+                        task,
+                        order,
+                        error.to_string(),
+                        Instant::now() + MISSING_RETRY_DELAY,
+                    )
+                    .await;
+                return Err(error);
+            }
+        }
+
+        Ok(())
+    }
+
+    async fn run_fetch_job(&self, job: ThumbnailJob) {
+        let device_id = job.device_id.as_str();
+        match self.inner.jobs.start(&job).await {
+            JobStart::Fetch => {}
+            JobStart::StartPending(next_job) => {
+                self.send_pending_job(device_id, next_job).await;
+                return;
+            }
+            JobStart::Stale => return,
+        }
+
+        let (status, retry_after) = match self.fetch_thumbnail(device_id, &job.report).await {
             Ok(ThumbnailStatus::Ready(image)) => {
                 debug!(device_id, "cached print thumbnail");
                 (ThumbnailStatus::Ready(image), None)
@@ -160,11 +235,35 @@ impl ThumbnailRuntime {
             }
         };
 
-        self.inner
-            .cache
-            .store(device_id, task, status, retry_after)
-            .await;
-        Ok(())
+        match self.inner.jobs.finish(&job, status, retry_after).await {
+            JobCompletion::Store => {}
+            JobCompletion::StartPending(next_job) => {
+                self.send_pending_job(device_id, next_job).await;
+            }
+            JobCompletion::Stale => {}
+        }
+    }
+
+    async fn send_pending_job(&self, device_id: &str, job: Box<ThumbnailJob>) {
+        let pending_task = job.task.clone();
+        let pending_order = job.order;
+        if let Err(error) = self.inner.jobs.send(*job) {
+            self.inner
+                .jobs
+                .send_failed(
+                    device_id,
+                    pending_task,
+                    pending_order,
+                    error.to_string(),
+                    Instant::now() + MISSING_RETRY_DELAY,
+                )
+                .await;
+            warn!(
+                device_id,
+                error = %error_chain(&error),
+                "failed to schedule pending print thumbnail refresh"
+            );
+        }
     }
 
     async fn fetch_thumbnail(
@@ -207,5 +306,17 @@ impl ThumbnailRuntime {
             .registry
             .first()
             .map(|entry| entry.id().to_owned()))
+    }
+}
+
+fn log_thumbnail_job_result(result: std::result::Result<(), tokio::task::JoinError>) {
+    match result {
+        Ok(()) => {}
+        Err(error) if error.is_cancelled() => {
+            debug!("thumbnail worker task cancelled");
+        }
+        Err(error) => {
+            error!(%error, "thumbnail worker task failed");
+        }
     }
 }
