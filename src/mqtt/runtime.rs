@@ -26,7 +26,6 @@ struct MqttState {
 
 #[derive(Default)]
 struct DeviceLiveState {
-    connection_key: Option<String>,
     report: Option<MqttReportState>,
 }
 
@@ -83,25 +82,17 @@ impl MqttRuntime {
 
     pub(crate) async fn snapshot(&self) -> MqttSnapshot {
         let state = self.inner.read().await;
-        let connections = state
-            .devices
-            .iter()
-            .filter_map(|(device_id, device)| {
-                let connection_key = device.connection_key.clone()?;
-                Some((
-                    device_id.clone(),
-                    connection_state(Some(connection_key), &state.connections),
-                ))
-            })
-            .collect::<HashMap<_, _>>();
+        let device_connections = device_connections(&state.connections);
+        let connections = snapshot_connections(&state.connections);
         let devices = state
             .devices
             .iter()
             .filter_map(|(device_id, device)| {
                 let report = device.report.as_ref()?;
+                let connection_key = device_connections.get(device_id).cloned();
                 Some((
                     device_id.clone(),
-                    device_state(device, report, &state.connections),
+                    device_state(connection_key, report, &state.connections),
                 ))
             })
             .collect();
@@ -126,34 +117,15 @@ impl MqttRuntime {
     ) {
         let key = key.into();
         let mut state = self.inner.write().await;
+        let device_ids = normalized_device_ids(device_ids);
         let previous_device_ids = state
             .connections
-            .entry(key.clone())
-            .or_default()
-            .device_ids
-            .clone();
-        let mut remove_devices = Vec::new();
-        for device_id in previous_device_ids {
-            if let Some(device) = state.devices.get_mut(&device_id) {
-                if device.connection_key.as_deref() == Some(key.as_str()) {
-                    device.connection_key = None;
-                    if device.report.is_none() {
-                        remove_devices.push(device_id);
-                    }
-                }
-            }
-        }
-        for device_id in remove_devices {
-            state.devices.remove(&device_id);
-        }
-        for device_id in &device_ids {
-            state
-                .devices
-                .entry(device_id.clone())
-                .or_default()
-                .connection_key = Some(key.clone());
-        }
+            .get(&key)
+            .map(|connection| connection.device_ids.clone())
+            .unwrap_or_default();
+        remove_devices_from_other_connections(&mut state.connections, &key, &device_ids);
         state.connections.entry(key).or_default().device_ids = device_ids;
+        remove_unregistered_reports(&mut state, previous_device_ids);
         bump_revision(&mut state);
     }
 
@@ -245,15 +217,11 @@ impl MqttRuntime {
 }
 
 fn device_state(
-    device: &DeviceLiveState,
+    key: Option<String>,
     report: &MqttReportState,
     connections: &HashMap<String, MqttConnectionState>,
 ) -> MqttDeviceState {
-    let connection = connection_state_for_report(
-        device.connection_key.clone(),
-        Some(report.last_report_at),
-        connections,
-    );
+    let connection = connection_state_for_report(key, Some(report.last_report_at), connections);
 
     MqttDeviceState::from_snapshot(
         report.report.clone(),
@@ -306,9 +274,76 @@ fn device_connection_status(
 }
 
 fn clear_reports_for_connection(state: &mut MqttState, key: &str) {
-    for device in state.devices.values_mut() {
-        if device.connection_key.as_deref() == Some(key) {
+    let device_ids = state
+        .connections
+        .get(key)
+        .map(|connection| connection.device_ids.clone())
+        .unwrap_or_default();
+    for device_id in device_ids {
+        if let Some(device) = state.devices.get_mut(&device_id) {
             device.report = None;
+        }
+    }
+}
+
+fn snapshot_connections(
+    connections: &HashMap<String, MqttConnectionState>,
+) -> HashMap<String, MqttDeviceConnection> {
+    let mut snapshot = HashMap::new();
+    for (key, connection) in connections {
+        for device_id in &connection.device_ids {
+            snapshot.insert(
+                device_id.clone(),
+                connection_state(Some(key.clone()), connections),
+            );
+        }
+    }
+    snapshot
+}
+
+fn device_connections(
+    connections: &HashMap<String, MqttConnectionState>,
+) -> HashMap<String, String> {
+    let mut devices = HashMap::new();
+    for (key, connection) in connections {
+        for device_id in &connection.device_ids {
+            devices.insert(device_id.clone(), key.clone());
+        }
+    }
+    devices
+}
+
+fn normalized_device_ids(device_ids: Vec<String>) -> Vec<String> {
+    let mut normalized = Vec::new();
+    for device_id in device_ids {
+        let device_id = device_id.trim();
+        if !device_id.is_empty() && !normalized.iter().any(|known| known == device_id) {
+            normalized.push(device_id.to_owned());
+        }
+    }
+    normalized
+}
+
+fn remove_devices_from_other_connections(
+    connections: &mut HashMap<String, MqttConnectionState>,
+    owning_key: &str,
+    device_ids: &[String],
+) {
+    for (key, connection) in connections {
+        if key == owning_key {
+            continue;
+        }
+        connection
+            .device_ids
+            .retain(|device_id| !device_ids.iter().any(|owned| owned == device_id));
+    }
+}
+
+fn remove_unregistered_reports(state: &mut MqttState, device_ids: Vec<String>) {
+    let registered = device_connections(&state.connections);
+    for device_id in device_ids {
+        if !registered.contains_key(&device_id) {
+            state.devices.remove(&device_id);
         }
     }
 }
@@ -462,5 +497,70 @@ mod tests {
         let snapshot = runtime.snapshot().await;
         let state = snapshot.devices.get("printer-a").unwrap();
         assert_eq!(state.report.task_name.as_deref(), Some("new"));
+    }
+
+    #[tokio::test]
+    async fn connection_device_ids_are_the_membership_authority() {
+        let runtime = MqttRuntime::new();
+        runtime
+            .register_connection("cloud", vec!["printer-a".to_owned()])
+            .await;
+        runtime.set_connection_connected("cloud").await;
+        runtime
+            .merge_report(
+                "printer-a",
+                PrinterStatus {
+                    task_name: Some("cloud report".to_owned()),
+                    ..PrinterStatus::default()
+                },
+            )
+            .await;
+
+        runtime
+            .register_connection("local", vec!["printer-a".to_owned()])
+            .await;
+
+        let snapshot = runtime.snapshot().await;
+        assert_eq!(
+            snapshot
+                .connections
+                .get("printer-a")
+                .and_then(|connection| connection.key.as_deref()),
+            Some("local")
+        );
+        assert_eq!(
+            snapshot
+                .devices
+                .get("printer-a")
+                .and_then(|device| device.connection.key.as_deref()),
+            Some("local")
+        );
+    }
+
+    #[tokio::test]
+    async fn reregistering_connection_drops_reports_for_removed_devices() {
+        let runtime = MqttRuntime::new();
+        runtime
+            .register_connection("cloud", vec!["printer-a".to_owned()])
+            .await;
+        runtime.set_connection_connected("cloud").await;
+        runtime
+            .merge_report(
+                "printer-a",
+                PrinterStatus {
+                    task_name: Some("old".to_owned()),
+                    ..PrinterStatus::default()
+                },
+            )
+            .await;
+
+        runtime
+            .register_connection("cloud", vec!["printer-b".to_owned()])
+            .await;
+
+        let snapshot = runtime.snapshot().await;
+        assert!(!snapshot.devices.contains_key("printer-a"));
+        assert!(!snapshot.connections.contains_key("printer-a"));
+        assert!(snapshot.connections.contains_key("printer-b"));
     }
 }
