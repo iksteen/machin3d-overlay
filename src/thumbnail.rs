@@ -23,6 +23,7 @@ pub(crate) enum ThumbnailStatus {
     Ready(ThumbnailImage),
     Loading(String),
     Missing(String),
+    Unavailable(String),
 }
 
 #[derive(Debug, Clone)]

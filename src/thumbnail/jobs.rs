@@ -52,6 +52,9 @@ impl ThumbnailJobs {
             ThumbnailStatus::Missing(error) => {
                 debug!(device_id, error, "thumbnail is unavailable");
             }
+            ThumbnailStatus::Unavailable(error) => {
+                debug!(device_id, error, "thumbnail source is unavailable");
+            }
         }
         status
     }

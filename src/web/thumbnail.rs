@@ -47,6 +47,12 @@ async fn thumbnail_response(state: AppState, device_id: Option<String>) -> Respo
             message,
         )
             .into_response(),
+        Ok(ThumbnailStatus::Unavailable(message)) => (
+            StatusCode::SERVICE_UNAVAILABLE,
+            thumbnail_headers(HeaderValue::from_static("text/plain; charset=utf-8")),
+            message,
+        )
+            .into_response(),
         Err(error) => (
             StatusCode::SERVICE_UNAVAILABLE,
             thumbnail_headers(HeaderValue::from_static("text/plain; charset=utf-8")),

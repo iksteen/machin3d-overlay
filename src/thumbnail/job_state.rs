@@ -246,7 +246,7 @@ impl DeviceThumbnailState {
         self.active_job = None;
         self.cached_status = Some(CachedThumbnailStatus {
             task,
-            status: ThumbnailStatus::Missing(message),
+            status: ThumbnailStatus::Unavailable(message),
             retry_after: Some(retry_after),
             order,
         });
@@ -352,7 +352,9 @@ impl CachedThumbnailStatus {
         match self.status {
             ThumbnailStatus::Ready(_) => true,
             ThumbnailStatus::Loading(_) if self.retry_after.is_none() => true,
-            ThumbnailStatus::Loading(_) | ThumbnailStatus::Missing(_) => self
+            ThumbnailStatus::Loading(_)
+            | ThumbnailStatus::Missing(_)
+            | ThumbnailStatus::Unavailable(_) => self
                 .retry_after
                 .is_some_and(|retry_after| retry_after > now),
         }

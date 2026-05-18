@@ -217,6 +217,10 @@ impl ThumbnailService {
                 ThumbnailStatus::Missing(message),
                 Some(Instant::now() + MISSING_RETRY_DELAY),
             ),
+            Ok(ThumbnailStatus::Unavailable(message)) => (
+                ThumbnailStatus::Unavailable(message),
+                Some(Instant::now() + MISSING_RETRY_DELAY),
+            ),
             Err(error) => {
                 let message = error_chain(&error);
                 warn!(
@@ -225,7 +229,7 @@ impl ThumbnailService {
                     "print thumbnail is unavailable"
                 );
                 (
-                    ThumbnailStatus::Missing(message),
+                    ThumbnailStatus::Unavailable(message),
                     Some(Instant::now() + MISSING_RETRY_DELAY),
                 )
             }
@@ -299,7 +303,11 @@ impl ThumbnailService {
         match self
             .inner
             .jobs
-            .finish(&job, ThumbnailStatus::Missing(message), Some(retry_after))
+            .finish(
+                &job,
+                ThumbnailStatus::Unavailable(message),
+                Some(retry_after),
+            )
             .await
         {
             JobCompletion::Store | JobCompletion::Stale => {}
