@@ -9,7 +9,7 @@ use tracing::debug;
 
 use crate::bambu::PrinterStatus;
 
-pub(super) use super::job_state::{JobCompletion, JobOrder, JobSchedule, JobStart, ThumbnailJob};
+pub(super) use super::job_state::{JobCompletion, JobOrder, JobStart, ThumbnailJob};
 use super::{
     cache::TaskKey,
     job_state::{JobToken, ThumbnailJobState},
@@ -57,7 +57,7 @@ impl ThumbnailJobs {
         task: TaskKey,
         report: PrinterStatus,
         order: JobOrder,
-    ) -> JobSchedule {
+    ) -> Option<ThumbnailJob> {
         let job = ThumbnailJob::new(device_id, task, report, order, self.next_token());
         let mut state = self.state.lock().await;
         state.schedule(job)

@@ -13,12 +13,6 @@ pub(super) struct ThumbnailJob {
     token: JobToken,
 }
 
-pub(super) enum JobSchedule {
-    Start(Box<ThumbnailJob>),
-    Pending,
-    Unchanged,
-}
-
 pub(super) enum JobStart {
     Fetch,
     StartPending(Box<ThumbnailJob>),
@@ -43,7 +37,7 @@ pub(super) struct ThumbnailJobState {
 }
 
 #[derive(Debug, Clone)]
-struct ThumbnailEntry {
+struct CachedThumbnailStatus {
     task: TaskKey,
     status: ThumbnailStatus,
     retry_after: Option<Instant>,
@@ -52,17 +46,21 @@ struct ThumbnailEntry {
 
 #[derive(Default)]
 struct DeviceThumbnailState {
-    entry: Option<ThumbnailEntry>,
-    job: Option<DeviceJobState>,
-    latest_order: Option<JobOrder>,
+    cached_status: Option<CachedThumbnailStatus>,
+    // A device has at most one active fetch. A newer task waits here and is
+    // promoted when the active fetch starts or finishes.
+    active_job: Option<ActiveThumbnailJob>,
+    // MQTT snapshots are processed by revision so older reports cannot restore
+    // stale loading or cached thumbnail state after a newer clear/task change.
+    latest_snapshot_order: Option<JobOrder>,
 }
 
-struct DeviceJobState {
-    running: TaskKey,
+struct ActiveThumbnailJob {
+    task: TaskKey,
     token: JobToken,
     order: JobOrder,
     started: bool,
-    pending: Option<ThumbnailJob>,
+    pending_job: Option<ThumbnailJob>,
 }
 
 impl ThumbnailJobState {
@@ -73,7 +71,7 @@ impl ThumbnailJobState {
             .unwrap_or_else(|| ThumbnailStatus::Missing("thumbnail is not available".to_owned()))
     }
 
-    pub(super) fn schedule(&mut self, job: ThumbnailJob) -> JobSchedule {
+    pub(super) fn schedule(&mut self, job: ThumbnailJob) -> Option<ThumbnailJob> {
         self.devices
             .entry(job.device_id.clone())
             .or_default()
@@ -123,87 +121,88 @@ impl ThumbnailJobState {
 
 impl DeviceThumbnailState {
     fn status(&self) -> Option<ThumbnailStatus> {
-        self.entry.as_ref().map(|entry| entry.status.clone())
+        self.cached_status
+            .as_ref()
+            .map(|entry| entry.status.clone())
     }
 
-    fn schedule(&mut self, job: ThumbnailJob) -> JobSchedule {
-        if self.is_stale(job.order) {
-            return JobSchedule::Unchanged;
+    fn schedule(&mut self, job: ThumbnailJob) -> Option<ThumbnailJob> {
+        if self.is_older_than_latest_snapshot(job.order) {
+            return None;
         }
-        self.remember_order(job.order);
+        self.remember_snapshot_order(job.order);
 
-        if self.entry_covers_task(&job) {
-            if let Some(device) = &mut self.job {
-                if device.running == job.task {
-                    if !device.started && job.order > device.order {
-                        device.order = device.order.max(job.order);
-                        device.pending = Some(job);
-                        return JobSchedule::Pending;
+        if self.cached_status_covers_task(&job) {
+            if let Some(active_job) = &mut self.active_job {
+                if active_job.task == job.task {
+                    if !active_job.started && job.order > active_job.order {
+                        active_job.order = active_job.order.max(job.order);
+                        active_job.pending_job = Some(job);
                     }
-                    return JobSchedule::Unchanged;
+                    return None;
                 }
-                if let Some(pending) = device
-                    .pending
+                if let Some(pending) = active_job
+                    .pending_job
                     .as_mut()
                     .filter(|pending| pending.task == job.task)
                 {
                     if job.order > pending.order {
-                        device.order = device.order.max(job.order);
+                        active_job.order = active_job.order.max(job.order);
                         *pending = job;
                     }
-                    return JobSchedule::Unchanged;
+                    return None;
                 }
             }
-            return JobSchedule::Unchanged;
+            return None;
         }
 
-        self.entry = Some(ThumbnailEntry::loading(job.task.clone(), job.order));
+        self.cached_status = Some(CachedThumbnailStatus::loading(job.task.clone(), job.order));
 
-        let Some(device) = &mut self.job else {
-            self.job = Some(DeviceJobState::new(&job));
-            return JobSchedule::Start(Box::new(job));
+        let Some(active_job) = &mut self.active_job else {
+            self.active_job = Some(ActiveThumbnailJob::new(&job));
+            return Some(job);
         };
 
-        let job_is_newer_than_running = job.order > device.order;
-        device.order = device.order.max(job.order);
-        if device.running == job.task {
-            if !device.started && job_is_newer_than_running {
-                device.pending = Some(job);
-                return JobSchedule::Pending;
+        let job_is_newer_than_active = job.order > active_job.order;
+        active_job.order = active_job.order.max(job.order);
+        if active_job.task == job.task {
+            if !active_job.started && job_is_newer_than_active {
+                active_job.pending_job = Some(job);
+                return None;
             }
-            if device.pending.is_some() {
-                device.pending = None;
-                return JobSchedule::Pending;
+            if active_job.pending_job.is_some() {
+                active_job.pending_job = None;
+                return None;
             }
-            return JobSchedule::Unchanged;
+            return None;
         }
-        if device
-            .pending
+        if active_job
+            .pending_job
             .as_ref()
             .is_some_and(|pending| pending.task == job.task)
         {
-            device.pending = Some(job);
-            return JobSchedule::Unchanged;
+            active_job.pending_job = Some(job);
+            return None;
         }
 
-        device.pending = Some(job);
-        JobSchedule::Pending
+        active_job.pending_job = Some(job);
+        None
     }
 
     fn clear(&mut self, order: JobOrder) {
-        if self.is_stale(order) {
+        if self.is_older_than_latest_snapshot(order) {
             return;
         }
-        self.remember_order(order);
-        self.job = None;
-        self.entry = None;
+        self.remember_snapshot_order(order);
+        self.active_job = None;
+        self.cached_status = None;
     }
 
     fn start(&mut self, job: &ThumbnailJob) -> JobStart {
-        let Some(device) = &mut self.job else {
+        let Some(active_job) = &mut self.active_job else {
             return JobStart::Stale;
         };
-        device.start(job)
+        active_job.start(job)
     }
 
     fn finish(
@@ -212,20 +211,24 @@ impl DeviceThumbnailState {
         status: ThumbnailStatus,
         retry_after: Option<Instant>,
     ) -> JobCompletion {
-        let Some(device) = &mut self.job else {
+        let Some(active_job) = &mut self.active_job else {
             return JobCompletion::Stale;
         };
-        match device.finish(job) {
-            DeviceJobCompletion::Store => {
-                self.job = None;
-                if let Some(entry) = self.entry.as_mut().filter(|entry| entry.task == job.task) {
+        match active_job.finish(job) {
+            ActiveJobCompletion::Store => {
+                self.active_job = None;
+                if let Some(entry) = self
+                    .cached_status
+                    .as_mut()
+                    .filter(|entry| entry.task == job.task)
+                {
                     entry.status = status;
                     entry.retry_after = retry_after;
                 }
                 JobCompletion::Store
             }
-            DeviceJobCompletion::StartPending(job) => JobCompletion::StartPending(job),
-            DeviceJobCompletion::Stale => JobCompletion::Stale,
+            ActiveJobCompletion::StartPending(job) => JobCompletion::StartPending(job),
+            ActiveJobCompletion::Stale => JobCompletion::Stale,
         }
     }
 
@@ -236,12 +239,12 @@ impl DeviceThumbnailState {
         message: String,
         retry_after: Instant,
     ) {
-        if self.is_stale(order) {
+        if self.is_older_than_latest_snapshot(order) {
             return;
         }
-        self.remember_order(order);
-        self.job = None;
-        self.entry = Some(ThumbnailEntry {
+        self.remember_snapshot_order(order);
+        self.active_job = None;
+        self.cached_status = Some(CachedThumbnailStatus {
             task,
             status: ThumbnailStatus::Missing(message),
             retry_after: Some(retry_after),
@@ -249,47 +252,51 @@ impl DeviceThumbnailState {
         });
     }
 
-    fn entry_covers_task(&mut self, job: &ThumbnailJob) -> bool {
-        self.entry
+    fn cached_status_covers_task(&mut self, job: &ThumbnailJob) -> bool {
+        self.cached_status
             .as_mut()
             .is_some_and(|entry| entry.cover_or_refresh_order(&job.task, job.order))
     }
 
-    fn is_stale(&self, order: JobOrder) -> bool {
-        self.latest_order.is_some_and(|latest| order < latest)
+    fn is_older_than_latest_snapshot(&self, order: JobOrder) -> bool {
+        self.latest_snapshot_order
+            .is_some_and(|latest| order < latest)
     }
 
-    fn remember_order(&mut self, order: JobOrder) {
-        self.latest_order = Some(self.latest_order.map_or(order, |latest| latest.max(order)));
+    fn remember_snapshot_order(&mut self, order: JobOrder) {
+        self.latest_snapshot_order = Some(
+            self.latest_snapshot_order
+                .map_or(order, |latest| latest.max(order)),
+        );
     }
 }
 
-enum DeviceJobCompletion {
+enum ActiveJobCompletion {
     Store,
     StartPending(Box<ThumbnailJob>),
     Stale,
 }
 
-impl DeviceJobState {
+impl ActiveThumbnailJob {
     fn new(job: &ThumbnailJob) -> Self {
         Self {
-            running: job.task.clone(),
+            task: job.task.clone(),
             token: job.token,
             order: job.order,
             started: false,
-            pending: None,
+            pending_job: None,
         }
     }
 
     fn start(&mut self, job: &ThumbnailJob) -> JobStart {
-        if self.running != job.task || self.token != job.token {
+        if self.task != job.task || self.token != job.token {
             return JobStart::Stale;
         }
         if self.started {
             return JobStart::Stale;
         }
 
-        if let Some(pending) = self.pending.take() {
+        if let Some(pending) = self.pending_job.take() {
             self.replace_with(&pending);
             JobStart::StartPending(Box::new(pending))
         } else {
@@ -298,28 +305,28 @@ impl DeviceJobState {
         }
     }
 
-    fn finish(&mut self, job: &ThumbnailJob) -> DeviceJobCompletion {
-        if self.running != job.task || self.token != job.token {
-            return DeviceJobCompletion::Stale;
+    fn finish(&mut self, job: &ThumbnailJob) -> ActiveJobCompletion {
+        if self.task != job.task || self.token != job.token {
+            return ActiveJobCompletion::Stale;
         }
 
-        if let Some(pending) = self.pending.take() {
+        if let Some(pending) = self.pending_job.take() {
             self.replace_with(&pending);
-            DeviceJobCompletion::StartPending(Box::new(pending))
+            ActiveJobCompletion::StartPending(Box::new(pending))
         } else {
-            DeviceJobCompletion::Store
+            ActiveJobCompletion::Store
         }
     }
 
     fn replace_with(&mut self, job: &ThumbnailJob) {
-        self.running = job.task.clone();
+        self.task = job.task.clone();
         self.token = job.token;
         self.order = job.order;
         self.started = false;
     }
 }
 
-impl ThumbnailEntry {
+impl CachedThumbnailStatus {
     fn loading(task: TaskKey, order: JobOrder) -> Self {
         Self {
             task,
@@ -386,9 +393,7 @@ impl JobToken {
 mod tests {
     use bytes::Bytes;
 
-    use super::{
-        JobCompletion, JobOrder, JobSchedule, JobStart, JobToken, ThumbnailJob, ThumbnailJobState,
-    };
+    use super::{JobCompletion, JobOrder, JobStart, JobToken, ThumbnailJob, ThumbnailJobState};
     use crate::bambu::PrinterStatus;
     use crate::thumbnail::cache::TaskKey;
     use crate::thumbnail::{ThumbnailImage, ThumbnailStatus};
@@ -406,7 +411,7 @@ mod tests {
             }
         }
 
-        fn schedule(&mut self, device_id: &str, task: &TaskKey) -> JobSchedule {
+        fn schedule(&mut self, device_id: &str, task: &TaskKey) -> Option<ThumbnailJob> {
             self.schedule_revision(device_id, task, 1)
         }
 
@@ -415,7 +420,7 @@ mod tests {
             device_id: &str,
             task: &TaskKey,
             revision: u64,
-        ) -> JobSchedule {
+        ) -> Option<ThumbnailJob> {
             self.schedule_order(device_id, task, JobOrder::new(revision))
         }
 
@@ -424,7 +429,7 @@ mod tests {
             device_id: &str,
             task: &TaskKey,
             order: JobOrder,
-        ) -> JobSchedule {
+        ) -> Option<ThumbnailJob> {
             let token = JobToken::new(self.next_token);
             self.next_token += 1;
             self.state.schedule(ThumbnailJob::new(
@@ -465,11 +470,8 @@ mod tests {
         }
 
         fn start_job(&mut self, device_id: &str, task: &TaskKey) -> ThumbnailJob {
-            match self.schedule(device_id, task) {
-                JobSchedule::Start(job) => *job,
-                JobSchedule::Pending => panic!("expected new running job, got pending job"),
-                JobSchedule::Unchanged => panic!("expected new running job, got unchanged job"),
-            }
+            self.schedule(device_id, task)
+                .expect("expected new running job")
         }
     }
 
@@ -480,16 +482,10 @@ mod tests {
         let new_task = TaskKey::for_test("new");
 
         let old_job = jobs.start_job("printer-a", &old_task);
-        assert!(matches!(
-            jobs.schedule("printer-a", &old_task),
-            JobSchedule::Unchanged
-        ));
+        assert!(jobs.schedule("printer-a", &old_task).is_none());
         assert!(matches!(jobs.start(&old_job), JobStart::Fetch));
 
-        assert!(matches!(
-            jobs.schedule("printer-a", &new_task),
-            JobSchedule::Pending
-        ));
+        assert!(jobs.schedule("printer-a", &new_task).is_none());
 
         let next = match jobs.finish(&old_job) {
             JobCompletion::StartPending(next) => next,
@@ -511,15 +507,9 @@ mod tests {
 
         let old_job = jobs.start_job("printer-a", &old_task);
         assert!(matches!(jobs.start(&old_job), JobStart::Fetch));
-        assert!(matches!(
-            jobs.schedule("printer-a", &new_task),
-            JobSchedule::Pending
-        ));
+        assert!(jobs.schedule("printer-a", &new_task).is_none());
 
-        assert!(matches!(
-            jobs.schedule("printer-a", &old_task),
-            JobSchedule::Pending
-        ));
+        assert!(jobs.schedule("printer-a", &old_task).is_none());
 
         assert!(matches!(jobs.finish(&old_job), JobCompletion::Store));
         assert!(matches!(jobs.finish(&old_job), JobCompletion::Stale));
@@ -532,11 +522,9 @@ mod tests {
 
         let old_job = jobs.start_job("printer-a", &task);
         jobs.clear("printer-a", JobOrder::new(2));
-        let new_job = match jobs.schedule_revision("printer-a", &task, 3) {
-            JobSchedule::Start(job) => *job,
-            JobSchedule::Pending => panic!("expected new running job, got pending job"),
-            JobSchedule::Unchanged => panic!("expected new running job, got unchanged job"),
-        };
+        let new_job = jobs
+            .schedule_revision("printer-a", &task, 3)
+            .expect("expected new running job");
 
         assert!(matches!(jobs.start(&old_job), JobStart::Stale));
         assert!(matches!(jobs.finish(&old_job), JobCompletion::Stale));
@@ -553,10 +541,7 @@ mod tests {
         let new_task = TaskKey::for_test("new");
 
         let old_job = jobs.start_job("printer-a", &old_task);
-        assert!(matches!(
-            jobs.schedule("printer-a", &new_task),
-            JobSchedule::Pending
-        ));
+        assert!(jobs.schedule("printer-a", &new_task).is_none());
 
         let next = match jobs.start(&old_job) {
             JobStart::StartPending(next) => next,
@@ -576,31 +561,27 @@ mod tests {
         let newer_task = TaskKey::for_test("newer");
         let older_task = TaskKey::for_test("older");
 
-        assert!(matches!(
-            jobs.schedule_revision("printer-a", &newer_task, 2),
-            JobSchedule::Start(_)
-        ));
-        assert!(matches!(
-            jobs.schedule_revision("printer-a", &older_task, 1),
-            JobSchedule::Unchanged
-        ));
+        assert!(jobs
+            .schedule_revision("printer-a", &newer_task, 2)
+            .is_some());
+        assert!(jobs
+            .schedule_revision("printer-a", &older_task, 1)
+            .is_none());
     }
 
     #[test]
-    fn clear_keeps_latest_order_to_reject_older_snapshots() {
+    fn clear_rejects_older_snapshots() {
         let mut jobs = TestJobs::new();
         let active_task = TaskKey::for_test("active");
 
-        assert!(matches!(
-            jobs.schedule_revision("printer-a", &active_task, 1),
-            JobSchedule::Start(_)
-        ));
+        assert!(jobs
+            .schedule_revision("printer-a", &active_task, 1)
+            .is_some());
         jobs.clear("printer-a", JobOrder::new(2));
 
-        assert!(matches!(
-            jobs.schedule_revision("printer-a", &active_task, 1),
-            JobSchedule::Unchanged
-        ));
+        assert!(jobs
+            .schedule_revision("printer-a", &active_task, 1)
+            .is_none());
         assert!(matches!(
             jobs.status("printer-a"),
             ThumbnailStatus::Missing(message) if message == "thumbnail is not available"
@@ -613,32 +594,20 @@ mod tests {
         let old_task = TaskKey::for_test("old");
         let new_task = TaskKey::for_test("new");
 
-        assert!(matches!(
-            jobs.schedule_revision("printer-a", &old_task, 1),
-            JobSchedule::Start(_)
-        ));
+        assert!(jobs.schedule_revision("printer-a", &old_task, 1).is_some());
         jobs.clear("printer-a", JobOrder::new(2));
 
-        assert!(matches!(
-            jobs.schedule_revision("printer-a", &new_task, 3),
-            JobSchedule::Start(_)
-        ));
+        assert!(jobs.schedule_revision("printer-a", &new_task, 3).is_some());
     }
 
     #[test]
-    fn newer_snapshot_promotes_pending_task() {
+    fn newer_snapshot_queues_pending_task() {
         let mut jobs = TestJobs::new();
         let old_task = TaskKey::for_test("old");
         let new_task = TaskKey::for_test("new");
 
-        assert!(matches!(
-            jobs.schedule_revision("printer-a", &old_task, 1),
-            JobSchedule::Start(_)
-        ));
-        assert!(matches!(
-            jobs.schedule_revision("printer-a", &new_task, 2),
-            JobSchedule::Pending
-        ));
+        assert!(jobs.schedule_revision("printer-a", &old_task, 1).is_some());
+        assert!(jobs.schedule_revision("printer-a", &new_task, 2).is_none());
     }
 
     #[test]
@@ -646,16 +615,11 @@ mod tests {
         let mut jobs = TestJobs::new();
         let task = TaskKey::for_test("task");
 
-        let job = match jobs.schedule_revision("printer-a", &task, 1) {
-            JobSchedule::Start(job) => *job,
-            JobSchedule::Pending => panic!("expected start, got pending"),
-            JobSchedule::Unchanged => panic!("expected start, got unchanged"),
-        };
+        let job = jobs
+            .schedule_revision("printer-a", &task, 1)
+            .expect("expected start");
         assert!(matches!(jobs.start(&job), JobStart::Fetch));
-        assert!(matches!(
-            jobs.schedule_revision("printer-a", &task, 2),
-            JobSchedule::Unchanged
-        ));
+        assert!(jobs.schedule_revision("printer-a", &task, 2).is_none());
 
         assert!(matches!(jobs.finish_ready(&job), JobCompletion::Store));
         assert!(matches!(
@@ -695,15 +659,10 @@ mod tests {
         let mut jobs = TestJobs::new();
         let task = TaskKey::for_test("task");
 
-        let queued = match jobs.schedule_revision("printer-a", &task, 1) {
-            JobSchedule::Start(job) => *job,
-            JobSchedule::Pending => panic!("expected start, got pending"),
-            JobSchedule::Unchanged => panic!("expected start, got unchanged"),
-        };
-        assert!(matches!(
-            jobs.schedule_revision("printer-a", &task, 2),
-            JobSchedule::Pending
-        ));
+        let queued = jobs
+            .schedule_revision("printer-a", &task, 1)
+            .expect("expected start");
+        assert!(jobs.schedule_revision("printer-a", &task, 2).is_none());
 
         let next = match jobs.start(&queued) {
             JobStart::StartPending(next) => next,
@@ -719,19 +678,11 @@ mod tests {
         let task_a = TaskKey::for_test("task-a");
         let task_b = TaskKey::for_test("task-b");
 
-        let queued_a = match jobs.schedule_revision("printer-a", &task_a, 1) {
-            JobSchedule::Start(job) => *job,
-            JobSchedule::Pending => panic!("expected start, got pending"),
-            JobSchedule::Unchanged => panic!("expected start, got unchanged"),
-        };
-        assert!(matches!(
-            jobs.schedule_revision("printer-a", &task_b, 2),
-            JobSchedule::Pending
-        ));
-        assert!(matches!(
-            jobs.schedule_revision("printer-a", &task_a, 3),
-            JobSchedule::Pending
-        ));
+        let queued_a = jobs
+            .schedule_revision("printer-a", &task_a, 1)
+            .expect("expected start");
+        assert!(jobs.schedule_revision("printer-a", &task_b, 2).is_none());
+        assert!(jobs.schedule_revision("printer-a", &task_a, 3).is_none());
 
         let next = match jobs.start(&queued_a) {
             JobStart::StartPending(next) => next,

@@ -19,7 +19,7 @@ use crate::{
 use super::{
     cache::TaskKey,
     error_chain,
-    jobs::{JobCompletion, JobOrder, JobSchedule, JobStart, ThumbnailJob, ThumbnailJobs},
+    jobs::{JobCompletion, JobOrder, JobStart, ThumbnailJob, ThumbnailJobs},
     source, ThumbnailStatus,
 };
 
@@ -163,15 +163,11 @@ impl ThumbnailService {
             .jobs
             .schedule(device_id.to_owned(), task, report.clone(), order)
             .await;
-        if matches!(scheduled, JobSchedule::Unchanged) {
-            return Ok(());
+        if let Some(job) = scheduled {
+            self.enqueue_job(device_id, job).await
+        } else {
+            Ok(())
         }
-
-        if let JobSchedule::Start(job) = scheduled {
-            self.enqueue_job(device_id, *job).await?;
-        }
-
-        Ok(())
     }
 
     async fn run_fetch_job(&self, job: ThumbnailJob) {
