@@ -8,7 +8,7 @@ use crate::{
     video::{infer_video_device_id, probe_video_endpoint, VideoEndpoint, DEFAULT_VIDEO_PORT},
 };
 
-use super::{access::hydrate_known_device, metadata::BindCatalog, registry::DeviceRegistry};
+use super::{access::hydrate_device_entry, metadata::BindCatalog, registry::DeviceRegistry};
 
 #[derive(Default)]
 pub(super) struct ExplicitVideoEndpoints {
@@ -52,7 +52,7 @@ impl ExplicitVideoEndpoints {
                     "--video-device `{video}` is for device `{device_id}`, but no matching cloud or local device is configured"
                 );
             };
-            hydrate_known_device(entry.device_mut(), Some(&video), bind_catalog).await?;
+            hydrate_device_entry(entry, Some(&video), bind_catalog).await?;
             entry.set_explicit_video(video);
         }
         Ok(())
@@ -209,12 +209,7 @@ mod tests {
         .unwrap();
 
         assert_eq!(
-            registry
-                .get("printer-a")
-                .unwrap()
-                .device()
-                .access_code
-                .as_deref(),
+            registry.get("printer-a").unwrap().access_code(),
             Some("12345678")
         );
     }

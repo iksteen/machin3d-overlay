@@ -17,7 +17,6 @@ pub(crate) struct KnownDevice {
     pub(crate) id: String,
     pub(crate) name: Option<String>,
     pub(crate) online: Option<bool>,
-    pub(crate) access_code: Option<String>,
     pub(crate) status: PrinterStatus,
 }
 
@@ -27,7 +26,6 @@ impl KnownDevice {
             id: non_empty_string(device.id)?,
             name: device.name,
             online: device.online,
-            access_code: device.access_code,
             status: device.status,
         })
     }
@@ -37,22 +35,21 @@ impl KnownDevice {
             id: device.id.clone(),
             name: device.endpoint.name.clone(),
             online: Some(true),
-            access_code: Some(device.endpoint.access_code.clone()),
             status: PrinterStatus::default(),
         }
-    }
-
-    pub(crate) fn has_access_code(&self) -> bool {
-        self.access_code
-            .as_deref()
-            .is_some_and(|code| !code.trim().is_empty())
     }
 }
 
 #[derive(Debug, Clone)]
 pub(crate) struct DeviceEntry {
     device: KnownDevice,
+    credentials: DeviceCredentials,
     capabilities: DeviceCapabilities,
+}
+
+#[derive(Debug, Clone, Default)]
+struct DeviceCredentials {
+    access_code: Option<String>,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -69,19 +66,24 @@ pub(crate) struct DeviceRegistry {
 }
 
 impl DeviceEntry {
-    fn from_cloud(device: KnownDevice) -> Self {
-        Self {
-            device,
+    fn from_cloud(device: CloudDevice) -> Option<Self> {
+        let credentials = DeviceCredentials {
+            access_code: device.access_code.clone(),
+        };
+        Some(Self {
+            device: KnownDevice::from_cloud(device)?,
+            credentials,
             capabilities: DeviceCapabilities {
                 cloud_mqtt: true,
                 ..DeviceCapabilities::default()
             },
-        }
+        })
     }
 
     fn from_local(local: LocalDevice) -> Self {
         Self {
             device: KnownDevice::from_local(&local),
+            credentials: DeviceCredentials::default(),
             capabilities: DeviceCapabilities {
                 local_mqtt: Some(local),
                 ..DeviceCapabilities::default()
@@ -99,6 +101,26 @@ impl DeviceEntry {
 
     pub(crate) fn id(&self) -> &str {
         self.device.id.as_str()
+    }
+
+    pub(crate) fn access_code(&self) -> Option<&str> {
+        let local_access_code = self
+            .local()
+            .and_then(|local| non_empty_str(local.endpoint.access_code()));
+        let entry_access_code = self
+            .credentials
+            .access_code
+            .as_deref()
+            .and_then(non_empty_str);
+        local_access_code.or(entry_access_code)
+    }
+
+    pub(crate) fn has_access_code(&self) -> bool {
+        self.access_code().is_some()
+    }
+
+    pub(super) fn set_access_code(&mut self, access_code: Option<String>) {
+        self.credentials.access_code = access_code;
     }
 
     pub(crate) fn source(&self) -> DeviceSource {
@@ -143,8 +165,8 @@ impl DeviceRegistry {
                 .map(str::trim)
                 .is_none_or(|device_id| !local_ids.contains(device_id))
         }) {
-            if let Some(device) = KnownDevice::from_cloud(device) {
-                registry.push(DeviceEntry::from_cloud(device));
+            if let Some(entry) = DeviceEntry::from_cloud(device) {
+                registry.push(entry);
             }
         }
         for local in local_devices {
@@ -213,6 +235,11 @@ fn non_empty_string(value: Option<String>) -> Option<String> {
         .filter(|value| !value.is_empty())
 }
 
+fn non_empty_str(value: &str) -> Option<&str> {
+    let value = value.trim();
+    (!value.is_empty()).then_some(value)
+}
+
 #[cfg(test)]
 mod tests {
     use crate::{
@@ -255,7 +282,10 @@ mod tests {
         assert_eq!(devices.len(), 2);
         assert_eq!(devices[0].id, "printer-b");
         assert_eq!(devices[1].id, "printer-a");
-        assert_eq!(devices[1].access_code.as_deref(), Some("12345678"));
+        assert_eq!(
+            registry.get("printer-a").unwrap().access_code(),
+            Some("12345678")
+        );
     }
 
     #[test]

@@ -2,7 +2,7 @@ use anyhow::Result;
 
 use crate::{local::LocalEndpointConfig, video::VideoEndpoint};
 
-use super::{metadata::BindCatalog, registry::KnownDevice};
+use super::{metadata::BindCatalog, registry::DeviceEntry};
 
 pub(super) async fn hydrate_local_config(
     device_id: &str,
@@ -26,20 +26,21 @@ pub(super) async fn hydrate_local_config(
     Ok(())
 }
 
-pub(super) async fn hydrate_known_device(
-    device: &mut KnownDevice,
+pub(super) async fn hydrate_device_entry(
+    entry: &mut DeviceEntry,
     video: Option<&VideoEndpoint>,
     bind_catalog: &mut BindCatalog<'_>,
 ) -> Result<()> {
-    if !device.has_access_code() {
+    if !entry.has_access_code() {
         if let Some(video) = video {
-            device.access_code = video.access_code().map(str::to_owned);
+            entry.set_access_code(video.access_code().map(str::to_owned));
         }
     }
-    if !device.has_access_code() {
-        let device_id = device.id.clone();
+    if !entry.has_access_code() {
+        let device_id = entry.id().to_owned();
         if let Some(metadata) = bind_catalog.device(&device_id).await? {
-            device.access_code = metadata.access_code;
+            entry.set_access_code(metadata.access_code);
+            let device = entry.device_mut();
             if !has_text(device.name.as_deref()) {
                 device.name = metadata.name;
             }

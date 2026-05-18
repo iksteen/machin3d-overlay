@@ -1,6 +1,6 @@
 use anyhow::{bail, Context, Result};
 
-use crate::devices::KnownDevice;
+use crate::devices::DeviceEntry;
 
 use super::VideoRuntimeInner;
 use crate::video::VideoEndpoint;
@@ -15,11 +15,11 @@ pub(super) async fn resolve_session(
     inner: &VideoRuntimeInner,
     requested_device_id: Option<&str>,
 ) -> Result<VideoSession> {
-    select_session(inner.registry.devices(), requested_device_id)
+    select_session(inner.registry.entries(), requested_device_id)
 }
 
 pub(super) fn select_session<'a>(
-    devices: impl IntoIterator<Item = &'a KnownDevice>,
+    devices: impl IntoIterator<Item = &'a DeviceEntry>,
     requested_device_id: Option<&str>,
 ) -> Result<VideoSession> {
     let mut devices = devices.into_iter();
@@ -28,7 +28,7 @@ pub(super) fn select_session<'a>(
         .filter(|device_id| !device_id.is_empty());
 
     if let Some(requested_device_id) = requested_device_id {
-        let Some(device) = devices.find(|device| device.id.trim() == requested_device_id) else {
+        let Some(device) = devices.find(|device| device.id().trim() == requested_device_id) else {
             bail!("device `{requested_device_id}` is not known");
         };
         return video_session(device).with_context(|| {
@@ -42,9 +42,9 @@ pub(super) fn select_session<'a>(
     video_session(device).context("first device did not include dev_access_code")
 }
 
-fn video_session(device: &KnownDevice) -> Option<VideoSession> {
-    let device_id = device.id.trim().to_owned();
-    let access_code = device.access_code.as_deref()?.trim().to_owned();
+fn video_session(device: &DeviceEntry) -> Option<VideoSession> {
+    let device_id = device.id().trim().to_owned();
+    let access_code = device.access_code()?.to_owned();
     if device_id.is_empty() || access_code.is_empty() {
         return None;
     }
@@ -104,15 +104,20 @@ mod tests {
 
     use crate::{
         bambu::CloudDevice,
-        devices::KnownDevice,
+        devices::DeviceRegistry,
         video::{runtime::session::select_session, VideoEndpoint},
     };
 
     use super::order_endpoints;
 
-    fn device(value: serde_json::Value) -> KnownDevice {
-        KnownDevice::from_cloud(serde_json::from_value::<CloudDevice>(value).unwrap())
-            .expect("device should have an ID")
+    fn devices(values: Vec<serde_json::Value>) -> DeviceRegistry {
+        DeviceRegistry::new(
+            values
+                .into_iter()
+                .map(|value| serde_json::from_value::<CloudDevice>(value).unwrap())
+                .collect(),
+            Vec::new(),
+        )
     }
 
     fn endpoint(value: &str) -> VideoEndpoint {
@@ -121,14 +126,12 @@ mod tests {
 
     #[test]
     fn selected_session_uses_real_cloud_field_names() {
-        let session = select_session(
-            &[device(json!({
-                "dev_id": "printer-a",
-                "dev_access_code": "12345678\n"
-            }))],
-            None,
-        )
-        .expect("single device should be selected");
+        let registry = devices(vec![json!({
+            "dev_id": "printer-a",
+            "dev_access_code": "12345678\n"
+        })]);
+        let session =
+            select_session(registry.entries(), None).expect("single device should be selected");
 
         assert_eq!(session.device_id, "printer-a");
         assert_eq!(session.access_code, "12345678");
@@ -136,14 +139,12 @@ mod tests {
 
     #[test]
     fn selected_session_uses_first_stable_device_by_default() {
-        let session = select_session(
-            &[
-                device(json!({"dev_id": "printer-a", "dev_access_code": "11111111"})),
-                device(json!({"dev_id": "printer-b", "dev_access_code": "22222222"})),
-            ],
-            None,
-        )
-        .expect("first device should be selected");
+        let registry = devices(vec![
+            json!({"dev_id": "printer-a", "dev_access_code": "11111111"}),
+            json!({"dev_id": "printer-b", "dev_access_code": "22222222"}),
+        ]);
+        let session =
+            select_session(registry.entries(), None).expect("first device should be selected");
 
         assert_eq!(session.device_id, "printer-a");
         assert_eq!(session.access_code, "11111111");
@@ -151,14 +152,12 @@ mod tests {
 
     #[test]
     fn selected_session_can_match_requested_device_id() {
-        let session = select_session(
-            &[
-                device(json!({"dev_id": "printer-a", "dev_access_code": "11111111"})),
-                device(json!({"dev_id": "printer-b", "dev_access_code": "22222222"})),
-            ],
-            Some("printer-b"),
-        )
-        .expect("requested device should be selected");
+        let registry = devices(vec![
+            json!({"dev_id": "printer-a", "dev_access_code": "11111111"}),
+            json!({"dev_id": "printer-b", "dev_access_code": "22222222"}),
+        ]);
+        let session = select_session(registry.entries(), Some("printer-b"))
+            .expect("requested device should be selected");
 
         assert_eq!(session.device_id, "printer-b");
         assert_eq!(session.access_code, "22222222");
@@ -166,13 +165,11 @@ mod tests {
 
     #[test]
     fn selected_session_rejects_unknown_requested_device_id() {
-        let error = select_session(
-            &[device(
-                json!({"dev_id": "printer-a", "dev_access_code": "11111111"}),
-            )],
-            Some("printer-b"),
-        )
-        .unwrap_err();
+        let registry = devices(vec![json!({
+            "dev_id": "printer-a",
+            "dev_access_code": "11111111"
+        })]);
+        let error = select_session(registry.entries(), Some("printer-b")).unwrap_err();
 
         assert!(error.to_string().contains("printer-b"));
     }
