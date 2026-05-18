@@ -1,23 +1,29 @@
-use url::form_urlencoded;
+use url::Url;
 
 pub(super) fn horizontal_overlay(device_id: &str) -> String {
-    format!("/overlay?{}", device_query(device_id))
+    device_path(device_id, "horizontal")
 }
 
 pub(super) fn vertical_overlay(device_id: &str) -> String {
-    format!("/vertical?{}", device_query(device_id))
+    device_path(device_id, "vertical")
 }
 
 pub(super) fn thumbnail(device_id: &str) -> String {
-    format!("/api/thumbnail?{}", device_query(device_id))
+    device_path(device_id, "thumbnail")
 }
 
 pub(super) fn video(device_id: &str) -> String {
-    format!("/api/video.mjpeg?{}", device_query(device_id))
+    device_path(device_id, "video.mjpeg")
 }
 
-fn device_query(device_id: &str) -> String {
-    form_urlencoded::Serializer::new(String::new())
-        .append_pair("device", device_id)
-        .finish()
+fn device_path(device_id: &str, endpoint: &str) -> String {
+    path_segments(&["devices", device_id, endpoint])
+}
+
+fn path_segments(segments: &[&str]) -> String {
+    let mut url = Url::parse("http://bambu-overlay.local").expect("base URL should be valid");
+    url.path_segments_mut()
+        .expect("base URL should support path segments")
+        .extend(segments);
+    url.path().to_owned()
 }

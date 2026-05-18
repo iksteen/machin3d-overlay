@@ -32,16 +32,32 @@ pub(crate) struct AppState {
 pub(crate) async fn serve_http(bind: Endpoint, state: AppState, shutdown: Shutdown) -> Result<()> {
     let app = Router::new()
         .route("/", get(overlay_page::horizontal_overlay))
-        .route("/overlay", get(overlay_page::horizontal_overlay))
+        .route("/horizontal", get(overlay_page::horizontal_overlay))
+        .route(
+            "/devices/{device_id}/horizontal",
+            get(overlay_page::horizontal_device_overlay),
+        )
         .route("/vertical", get(overlay_page::vertical_overlay))
+        .route(
+            "/devices/{device_id}/vertical",
+            get(overlay_page::vertical_device_overlay),
+        )
         .route("/api/devices", get(devices::known_devices))
         .route("/api/current-print", get(current_print::current_print))
         .route(
             "/api/current-print/events",
             get(current_print::current_print_events),
         )
-        .route("/api/thumbnail", get(thumbnail::thumbnail))
-        .route("/api/video.mjpeg", get(video::video_mjpeg))
+        .route("/thumbnail", get(thumbnail::thumbnail))
+        .route(
+            "/devices/{device_id}/thumbnail",
+            get(thumbnail::device_thumbnail),
+        )
+        .route("/video.mjpeg", get(video::video_mjpeg))
+        .route(
+            "/devices/{device_id}/video.mjpeg",
+            get(video::device_video_mjpeg),
+        )
         .route("/static/{file}", get(overlay_page::static_asset))
         .with_state(state);
 

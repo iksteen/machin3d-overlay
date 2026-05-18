@@ -1,24 +1,26 @@
 use axum::{
-    extract::{Query, State},
+    extract::{Path, State},
     http::{header, HeaderName, HeaderValue, StatusCode},
     response::{IntoResponse, Response},
 };
-use serde::Deserialize;
 
 use crate::thumbnail::ThumbnailStatus;
 
 use super::AppState;
 
-#[derive(Debug, Deserialize)]
-pub(super) struct ThumbnailQuery {
-    device: Option<String>,
+pub(super) async fn thumbnail(State(state): State<AppState>) -> Response {
+    thumbnail_response(state, None).await
 }
 
-pub(super) async fn thumbnail(
+pub(super) async fn device_thumbnail(
     State(state): State<AppState>,
-    Query(query): Query<ThumbnailQuery>,
+    Path(device_id): Path<String>,
 ) -> Response {
-    match state.thumbnail.thumbnail(query.device.as_deref()).await {
+    thumbnail_response(state, Some(device_id)).await
+}
+
+async fn thumbnail_response(state: AppState, device_id: Option<String>) -> Response {
+    match state.thumbnail.thumbnail(device_id.as_deref()).await {
         Ok(ThumbnailStatus::Ready(image)) => {
             let content_type = HeaderValue::from_str(&image.content_type)
                 .unwrap_or_else(|_| HeaderValue::from_static("application/octet-stream"));

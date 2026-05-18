@@ -2,7 +2,7 @@
   const configScript = document.getElementById("overlay-config");
   const config = JSON.parse(configScript?.textContent || "{}");
   const eventsUrl = config.eventsUrl || "/api/current-print/events";
-  const selectedDeviceId = (new URLSearchParams(window.location.search).get("device") || "").trim();
+  const selectedDeviceId = String(config.selectedDeviceId || "").trim();
   const state = {
     title: document.getElementById("title"),
     fileName: document.getElementById("fileName"),
@@ -393,6 +393,7 @@
   if (window.__bambuOverlayEnableTestHooks) {
     window.__bambuOverlayTest = {
       state,
+      render,
       renderConnectionBubble,
       renderThumb,
     };

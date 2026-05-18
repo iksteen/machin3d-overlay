@@ -83,13 +83,16 @@ class FakeElement {
   }
 }
 
-function loadOverlay({ fetch = () => Promise.reject(new Error("unexpected fetch")) } = {}) {
+function loadOverlay({
+  fetch = () => Promise.reject(new Error("unexpected fetch")),
+  config = {},
+} = {}) {
   const elements = new Map();
   const document = {
     createElement: (tagName) => new FakeElement(tagName),
     getElementById: (id) => {
       if (id === "overlay-config") {
-        return { textContent: "{}" };
+        return { textContent: JSON.stringify(config) };
       }
       if (!elements.has(id)) {
         elements.set(id, new FakeElement());
@@ -124,7 +127,6 @@ function loadOverlay({ fetch = () => Promise.reject(new Error("unexpected fetch"
       createObjectURL: () => "blob:test",
       revokeObjectURL: (url) => revokedUrls.push(url),
     },
-    URLSearchParams,
     document,
     fetch,
     requestAnimationFrame: (callback) => callback(),
@@ -146,7 +148,7 @@ function loadOverlay({ fetch = () => Promise.reject(new Error("unexpected fetch"
 
 test("renderThumb clears an existing thumbnail when the next status is missing", () => {
   const { state, renderThumb, revokedUrls } = loadOverlay();
-  state.thumbUrl = "/api/thumbnail?device=printer-a";
+  state.thumbUrl = "/devices/printer-a/thumbnail";
   state.thumbPendingUrl = null;
   state.thumbObjectUrl = "blob:old";
   state.thumbSlot.replaceChildren(new FakeElement("img"));
@@ -161,6 +163,22 @@ test("renderThumb clears an existing thumbnail when the next status is missing",
   assert.deepEqual(revokedUrls, ["blob:old"]);
 });
 
+test("render uses the configured device id from the route", () => {
+  const { state, render } = loadOverlay({
+    config: { selectedDeviceId: "printer-b" },
+  });
+
+  render({
+    ok: true,
+    devices: [
+      { id: "printer-a", isPrinting: true, title: "Printer A" },
+      { id: "printer-b", isPrinting: true, title: "Printer B" },
+    ],
+  });
+
+  assert.equal(state.title.textContent, "Printer B");
+});
+
 test("renderThumb refetches when the thumbnail task changes without a URL change", () => {
   const fetches = [];
   const { state, renderThumb } = loadOverlay({
@@ -169,14 +187,14 @@ test("renderThumb refetches when the thumbnail task changes without a URL change
       return new Promise(() => {});
     },
   });
-  state.thumbUrl = "/api/thumbnail?device=printer-a";
+  state.thumbUrl = "/devices/printer-a/thumbnail";
   state.thumbKey = "old-task";
 
-  renderThumb("/api/thumbnail?device=printer-a", "new-task");
-  renderThumb("/api/thumbnail?device=printer-a", "new-task");
+  renderThumb("/devices/printer-a/thumbnail", "new-task");
+  renderThumb("/devices/printer-a/thumbnail", "new-task");
 
   assert.equal(fetches.length, 1);
-  assert.equal(fetches[0].url, "/api/thumbnail?device=printer-a");
+  assert.equal(fetches[0].url, "/devices/printer-a/thumbnail");
   assert.equal(fetches[0].options.cache, "no-store");
   assert.equal(state.thumbPendingKey, "new-task");
 });

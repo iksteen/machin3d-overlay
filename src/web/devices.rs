@@ -123,19 +123,19 @@ mod tests {
         assert_eq!(value["devices"][1]["source"], "local");
         assert_eq!(
             value["devices"][1]["paths"]["horizontal"],
-            "/overlay?device=printer+a%2F1"
+            "/devices/printer%20a%2F1/horizontal"
         );
         assert_eq!(
             value["devices"][1]["paths"]["vertical"],
-            "/vertical?device=printer+a%2F1"
+            "/devices/printer%20a%2F1/vertical"
         );
         assert_eq!(
             value["devices"][1]["paths"]["thumbnail"],
-            "/api/thumbnail?device=printer+a%2F1"
+            "/devices/printer%20a%2F1/thumbnail"
         );
         assert_eq!(
             value["devices"][1]["paths"]["video"],
-            "/api/video.mjpeg?device=printer+a%2F1"
+            "/devices/printer%20a%2F1/video.mjpeg"
         );
 
         let value = serde_json::to_value(known_devices_payload(
@@ -145,7 +145,7 @@ mod tests {
         .unwrap();
         assert_eq!(
             value["devices"][0]["paths"]["video"],
-            "/api/video.mjpeg?device=printer-b"
+            "/devices/printer-b/video.mjpeg"
         );
     }
 }

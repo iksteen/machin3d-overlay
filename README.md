@@ -36,8 +36,9 @@ Run the overlay server:
 bambu-overlay serve
 ```
 
-Open `http://127.0.0.1:8765/` for the horizontal overlay or
-`http://127.0.0.1:8765/vertical` for the vertical overlay.
+Open `http://127.0.0.1:8765/` or `http://127.0.0.1:8765/horizontal`
+for the horizontal overlay, or `http://127.0.0.1:8765/vertical` for the
+vertical overlay.
 
 When the token account has more than one printer, list the available device IDs:
 
@@ -45,11 +46,10 @@ When the token account has more than one printer, list the available device IDs:
 bambu-overlay devices
 ```
 
-Select a printer in the overlay with the `device` query argument:
-`http://127.0.0.1:8765/?device=<DEVICE_ID>` or
-`http://127.0.0.1:8765/vertical?device=<DEVICE_ID>`. If the argument is
-missing or does not match a returned printer, the overlay uses the first printer
-from the configured device list.
+Select a printer in the overlay with a device-specific path:
+`http://127.0.0.1:8765/devices/<DEVICE_ID>/horizontal` or
+`http://127.0.0.1:8765/devices/<DEVICE_ID>/vertical`. The default layout paths
+use the first printer from the configured device list.
 
 The browser uses server-sent events from `/api/current-print/events`. The server
 emits after MQTT messages and at least once per second. While serving, the
@@ -63,8 +63,9 @@ includes a video path only when the service has a validated explicit video
 endpoint or a successful local startup video probe for that device. Access codes
 are never included in this response.
 
-Fetch the active print thumbnail with `/api/thumbnail?device=<DEVICE_ID>`.
-Without `device`, the first printer from the configured device list is used.
+Fetch the active print thumbnail with `/devices/<DEVICE_ID>/thumbnail`.
+Without a device path, `/thumbnail` uses the first printer from the
+configured device list.
 Cloud devices resolve the current task through Bambu Cloud and cache the
 downloaded thumbnail. Local devices download the active `.3mf` from the printer
 over LAN FTPS and cache the embedded thumbnail.
@@ -141,12 +142,11 @@ To run without any Bambu Cloud API calls, provide only `--local-device` entries
 that include access codes.
 
 Select a local printer the same way as cloud printers:
-`http://127.0.0.1:8765/?device=<DEVICE_ID>`.
+`http://127.0.0.1:8765/devices/<DEVICE_ID>/horizontal`.
 
 ## Video
 
-A1 and P1 series printers can expose their camera as MJPEG at
-`/api/video.mjpeg`:
+A1 and P1 series printers can expose their camera as MJPEG at `/video.mjpeg`:
 
 ```sh
 bambu-overlay serve --video-device 192.168.1.50
@@ -172,14 +172,14 @@ local device ID, that endpoint is added automatically. No camera access code is
 sent during startup video probes. `--video-device` remains useful for cloud
 devices and for overriding or adding camera endpoints explicitly.
 
-Select a camera with `/api/video.mjpeg?device=<DEVICE_ID>`. Without `device`,
-the first printer from the configured device list is used. For each selected
-device, `bambu-overlay` tries the configured video endpoints with that device ID
-as TLS SNI. The printer certificate common name is the device serial number, so
-`bambu-overlay` uses the certificate to reject mismatched endpoints before
-sending the camera access code. It also remembers mismatched endpoint/device
-pairs it discovers while probing, then remembers the endpoint that successfully
-streams frames for the rest of the process.
+Select a camera with `/devices/<DEVICE_ID>/video.mjpeg`. Without a device path,
+`/video.mjpeg` uses the first printer from the configured device list. For each
+selected device, `bambu-overlay` tries the configured video
+endpoints with that device ID as TLS SNI. The printer certificate common name is
+the device serial number, so `bambu-overlay` uses the certificate to reject
+mismatched endpoints before sending the camera access code. It also remembers
+mismatched endpoint/device pairs it discovers while probing, then remembers the
+endpoint that successfully streams frames for the rest of the process.
 
 The video connection uses `native-tls` with only Bambu's BBL CA certificate
 trusted for this transport. The TLS backend verifies the certificate chain,
@@ -189,7 +189,7 @@ TLS handshake, `bambu-overlay` checks that the certificate common name matches
 the requested device ID before sending the camera access code.
 
 Only one upstream video connection to the printer is opened. Multiple OBS or
-browser clients connected to the same `/api/video.mjpeg?device=<DEVICE_ID>`
+browser clients connected to the same `/devices/<DEVICE_ID>/video.mjpeg`
 stream share that connection, and the printer connection is closed after the
 last MJPEG client disconnects.
 

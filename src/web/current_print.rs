@@ -375,7 +375,7 @@ mod tests {
         assert_eq!(device.plate, None);
         assert_eq!(
             device.thumbnail.as_deref(),
-            Some("/api/thumbnail?device=printer-a")
+            Some("/devices/printer-a/thumbnail")
         );
         assert_eq!(device.thumbnail_task.as_deref(), Some("Calibration cube"));
         assert_eq!(device.ams_spools.len(), 1);

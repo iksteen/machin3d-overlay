@@ -3,28 +3,30 @@ use std::convert::Infallible;
 use async_stream::stream;
 use axum::{
     body::Body,
-    extract::{Query, State},
+    extract::{Path, State},
     http::{header, StatusCode},
     response::{IntoResponse, Response},
 };
 use bytes::Bytes;
-use serde::Deserialize;
 use tracing::warn;
 
 use super::AppState;
 
 const MJPEG_BOUNDARY: &str = "frame";
 
-#[derive(Debug, Deserialize)]
-pub(super) struct VideoQuery {
-    device: Option<String>,
+pub(super) async fn video_mjpeg(State(state): State<AppState>) -> Response {
+    video_mjpeg_response(state, None).await
 }
 
-pub(super) async fn video_mjpeg(
+pub(super) async fn device_video_mjpeg(
     State(state): State<AppState>,
-    Query(query): Query<VideoQuery>,
+    Path(device_id): Path<String>,
 ) -> Response {
-    let subscription = match state.video.subscribe(query.device.as_deref()).await {
+    video_mjpeg_response(state, Some(device_id)).await
+}
+
+async fn video_mjpeg_response(state: AppState, device_id: Option<String>) -> Response {
+    let subscription = match state.video.subscribe(device_id.as_deref()).await {
         Ok(subscription) => subscription,
         Err(error) => {
             return (
