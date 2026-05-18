@@ -1,4 +1,4 @@
-use std::{collections::HashSet, path::PathBuf, time::Duration};
+use std::{path::PathBuf, time::Duration};
 
 use anyhow::{bail, Context, Result};
 use chrono::{DateTime, Utc};
@@ -250,26 +250,14 @@ async fn devices_cmd(args: DevicesArgs) -> Result<()> {
 }
 
 async fn serve_cmd(args: ServeArgs) -> Result<()> {
-    validate_devices(&args.devices.cloud_devices)?;
     let config = ServerConfig::from(&args);
     let cloud = optional_token_client(args.token.token_file.clone(), args.timeout)?;
     serve(cloud, config).await
 }
 
 async fn mqtt_cmd(args: MqttArgs) -> Result<()> {
-    validate_devices(&args.devices.cloud_devices)?;
     let cloud = optional_token_client(args.token.token_file.clone(), args.timeout)?;
     monitor_mqtt(cloud, MonitorConfig::from(&args)).await
-}
-
-fn validate_devices(cloud_devices: &[String]) -> Result<()> {
-    let mut seen = HashSet::new();
-    for device_id in cloud_devices {
-        if !seen.insert(device_id.as_str()) {
-            bail!("--cloud-device includes duplicate device id `{device_id}`");
-        }
-    }
-    Ok(())
 }
 
 fn optional_token_client(token_file: PathBuf, timeout: f64) -> Result<Option<CloudSession>> {
