@@ -2,7 +2,6 @@ use std::net::SocketAddr;
 
 mod current_print;
 mod devices;
-mod mjpeg;
 mod overlay_page;
 mod paths;
 mod thumbnail;
