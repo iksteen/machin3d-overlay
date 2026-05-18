@@ -1,6 +1,7 @@
 mod archive;
 mod cache;
 mod cloud;
+mod job_state;
 mod jobs;
 mod local;
 mod readiness;

@@ -1,10 +1,11 @@
 use std::{
+    collections::HashMap,
     sync::Arc,
     time::{Duration, Instant},
 };
 
 use anyhow::{ensure, Context, Result};
-use tokio::task::JoinSet;
+use tokio::task::{Id, JoinError, JoinSet};
 use tracing::{debug, error, warn};
 
 use crate::{
@@ -67,12 +68,13 @@ impl ThumbnailRuntime {
         let mut changes = self.inner.mqtt.subscribe();
         let mut job_rx = self.inner.jobs.receiver.lock().await;
         let mut jobs = JoinSet::new();
+        let mut running_jobs = HashMap::new();
         self.refresh_changed_devices().await;
         loop {
             tokio::select! {
                 _ = shutdown.cancelled() => {
                     jobs.abort_all();
-                    while let Some(result) = jobs.join_next().await {
+                    while let Some(result) = jobs.join_next_with_id().await {
                         log_thumbnail_job_result(result);
                     }
                     return;
@@ -85,12 +87,14 @@ impl ThumbnailRuntime {
                 }
                 Some(job) = job_rx.recv() => {
                     let runtime = self.clone();
-                    jobs.spawn(async move {
+                    let tracked_job = job.clone();
+                    let handle = jobs.spawn(async move {
                         runtime.run_fetch_job(job).await;
                     });
+                    running_jobs.insert(handle.id(), tracked_job);
                 }
-                Some(result) = jobs.join_next(), if !jobs.is_empty() => {
-                    log_thumbnail_job_result(result);
+                Some(result) = jobs.join_next_with_id(), if !jobs.is_empty() => {
+                    self.handle_thumbnail_job_result(result, &mut running_jobs).await;
                 }
             }
         }
@@ -266,6 +270,45 @@ impl ThumbnailRuntime {
         }
     }
 
+    async fn handle_thumbnail_job_result(
+        &self,
+        result: std::result::Result<(Id, ()), JoinError>,
+        running_jobs: &mut HashMap<Id, ThumbnailJob>,
+    ) {
+        match result {
+            Ok((id, ())) => {
+                running_jobs.remove(&id);
+            }
+            Err(error) if error.is_cancelled() => {
+                running_jobs.remove(&error.id());
+                debug!("thumbnail worker task cancelled");
+            }
+            Err(error) => {
+                let job = running_jobs.remove(&error.id());
+                error!(%error, "thumbnail worker task failed");
+                if let Some(job) = job {
+                    self.finish_failed_job(job, error.to_string()).await;
+                }
+            }
+        }
+    }
+
+    async fn finish_failed_job(&self, job: ThumbnailJob, message: String) {
+        let device_id = job.device_id.clone();
+        let retry_after = Instant::now() + MISSING_RETRY_DELAY;
+        match self
+            .inner
+            .jobs
+            .finish(&job, ThumbnailStatus::Missing(message), Some(retry_after))
+            .await
+        {
+            JobCompletion::Store | JobCompletion::Stale => {}
+            JobCompletion::StartPending(next_job) => {
+                self.send_pending_job(&device_id, next_job).await;
+            }
+        }
+    }
+
     async fn fetch_thumbnail(
         &self,
         device_id: &str,
@@ -309,9 +352,9 @@ impl ThumbnailRuntime {
     }
 }
 
-fn log_thumbnail_job_result(result: std::result::Result<(), tokio::task::JoinError>) {
+fn log_thumbnail_job_result(result: std::result::Result<(Id, ()), JoinError>) {
     match result {
-        Ok(()) => {}
+        Ok((_, ())) => {}
         Err(error) if error.is_cancelled() => {
             debug!("thumbnail worker task cancelled");
         }
