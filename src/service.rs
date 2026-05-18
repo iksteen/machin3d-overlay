@@ -59,6 +59,19 @@ impl ServiceTasks {
         });
     }
 
+    pub(crate) fn spawn_with_shutdown<F, Fut>(
+        &mut self,
+        shutdown: &Shutdown,
+        name: impl Into<String>,
+        future: F,
+    ) where
+        F: FnOnce(ShutdownReceiver) -> Fut,
+        Fut: Future<Output = ()> + Send + 'static,
+    {
+        let shutdown = shutdown.subscribe();
+        self.spawn(name, future(shutdown));
+    }
+
     pub(crate) async fn wait_for_failure(&mut self) -> Result<()> {
         match self.monitors.join_next().await {
             Some(Ok(exit)) => Err(exit.unexpected_error()),
@@ -262,6 +275,25 @@ mod tests {
         let mut receiver = shutdown.subscribe();
         let mut tasks = ServiceTasks::new();
         tasks.spawn("cooperative task", async move {
+            receiver.cancelled().await;
+        });
+
+        shutdown.trigger();
+
+        tokio::time::timeout(
+            Duration::from_secs(1),
+            tasks.shutdown(Duration::from_secs(1)),
+        )
+        .await
+        .expect("shutdown should not hang")
+        .expect("cooperative task should stop cleanly");
+    }
+
+    #[tokio::test]
+    async fn spawn_with_shutdown_subscribes_task_to_shutdown() {
+        let shutdown = Shutdown::new();
+        let mut tasks = ServiceTasks::new();
+        tasks.spawn_with_shutdown(&shutdown, "cooperative task", |mut receiver| async move {
             receiver.cancelled().await;
         });
 
