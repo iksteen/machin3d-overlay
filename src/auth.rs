@@ -24,6 +24,7 @@ pub struct TokenData {
     pub access_token: String,
     pub api_base: Option<String>,
     pub uid: String,
+    pub expires_at: Option<String>,
 }
 
 #[derive(Serialize)]

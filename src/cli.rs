@@ -1,6 +1,7 @@
 use std::{collections::HashSet, path::PathBuf, time::Duration};
 
 use anyhow::{bail, Context, Result};
+use chrono::{DateTime, Utc};
 use clap::{Args, Parser, Subcommand};
 
 use crate::{
@@ -281,6 +282,7 @@ fn optional_token_client(token_file: PathBuf, timeout: f64) -> Result<Option<Clo
 
 fn token_client(token_file: Option<PathBuf>, timeout: f64) -> Result<CloudSession> {
     let token_data = load_token(token_file)?;
+    validate_token_freshness(&token_data)?;
     let access_token = token_data.access_token.trim();
     if access_token.is_empty() {
         bail!("cached token file does not include accessToken");
@@ -300,6 +302,27 @@ fn token_client(token_file: Option<PathBuf>, timeout: f64) -> Result<CloudSessio
         access_token: access_token.to_owned(),
         user_id: user_id.to_owned(),
     })
+}
+
+fn validate_token_freshness(token_data: &crate::auth::TokenData) -> Result<()> {
+    let Some(expires_at) = token_data
+        .expires_at
+        .as_deref()
+        .map(str::trim)
+        .filter(|expires_at| !expires_at.is_empty())
+    else {
+        return Ok(());
+    };
+    let expires_at = DateTime::parse_from_rfc3339(expires_at)
+        .context("cached token expiresAt is not a valid RFC3339 timestamp")?
+        .with_timezone(&Utc);
+    if expires_at <= Utc::now() {
+        bail!(
+            "cached Bambu token expired at {}; run `bambu-overlay login` again",
+            expires_at.to_rfc3339()
+        );
+    }
+    Ok(())
 }
 
 fn client(args: &HttpArgs) -> Result<BambuClient> {
@@ -379,7 +402,9 @@ fn parse_cloud_device_id(value: &str) -> std::result::Result<String, String> {
 
 #[cfg(test)]
 mod tests {
-    use super::parse_cloud_device_id;
+    use crate::auth::TokenData;
+
+    use super::{parse_cloud_device_id, validate_token_freshness};
 
     #[test]
     fn cloud_device_parser_accepts_id_only() {
@@ -390,5 +415,33 @@ mod tests {
     fn cloud_device_parser_rejects_metadata() {
         let error = parse_cloud_device_id("printer-a,12345678").unwrap_err();
         assert!(error.contains("expected only DEVICE_ID"));
+    }
+
+    #[test]
+    fn token_freshness_rejects_expired_tokens() {
+        let token =
+            token_with_expiry((chrono::Utc::now() - chrono::Duration::minutes(1)).to_rfc3339());
+
+        let error = validate_token_freshness(&token).unwrap_err();
+
+        assert!(error.to_string().contains("expired"));
+        assert!(error.to_string().contains("bambu-overlay login"));
+    }
+
+    #[test]
+    fn token_freshness_accepts_unexpired_tokens() {
+        let token =
+            token_with_expiry((chrono::Utc::now() + chrono::Duration::minutes(1)).to_rfc3339());
+
+        validate_token_freshness(&token).unwrap();
+    }
+
+    fn token_with_expiry(expires_at: String) -> TokenData {
+        TokenData {
+            access_token: "token".to_owned(),
+            api_base: None,
+            uid: "123".to_owned(),
+            expires_at: Some(expires_at),
+        }
     }
 }
