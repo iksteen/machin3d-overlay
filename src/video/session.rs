@@ -2,8 +2,7 @@ use anyhow::{bail, Context, Result};
 
 use crate::devices::DeviceEntry;
 
-use super::VideoRuntimeInner;
-use crate::video::VideoEndpoint;
+use super::{stream::VideoState, VideoEndpoint};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) struct VideoSession {
@@ -12,10 +11,10 @@ pub(super) struct VideoSession {
 }
 
 pub(super) async fn resolve_session(
-    inner: &VideoRuntimeInner,
+    state: &VideoState,
     requested_device_id: Option<&str>,
 ) -> Result<VideoSession> {
-    select_session(inner.registry.entries(), requested_device_id)
+    select_session(state.registry.entries(), requested_device_id)
 }
 
 pub(super) fn select_session<'a>(
@@ -54,12 +53,14 @@ fn video_session(device: &DeviceEntry) -> Option<VideoSession> {
     })
 }
 
-pub(super) async fn candidate_endpoints(
-    inner: &VideoRuntimeInner,
-    device_id: &str,
-) -> Vec<VideoEndpoint> {
-    let endpoints = inner.endpoints.clone();
-    let remembered = inner.endpoint_map.lock().await.get(device_id).cloned();
+pub(super) async fn candidate_endpoints(state: &VideoState, device_id: &str) -> Vec<VideoEndpoint> {
+    let endpoints = state.endpoints.clone();
+    let remembered = state
+        .remembered_endpoints
+        .lock()
+        .await
+        .get(device_id)
+        .cloned();
 
     order_endpoints(endpoints, remembered)
 }
@@ -85,12 +86,12 @@ pub(super) fn order_endpoints(
 }
 
 pub(super) async fn remember_endpoint(
-    inner: &VideoRuntimeInner,
+    state: &VideoState,
     device_id: &str,
     endpoint: &VideoEndpoint,
 ) {
-    inner
-        .endpoint_map
+    state
+        .remembered_endpoints
         .lock()
         .await
         .insert(device_id.to_owned(), endpoint.clone());
@@ -102,13 +103,9 @@ mod tests {
 
     use serde_json::json;
 
-    use crate::{
-        bambu::CloudDevice,
-        devices::DeviceRegistry,
-        video::{runtime::session::select_session, VideoEndpoint},
-    };
+    use crate::{bambu::CloudDevice, devices::DeviceRegistry, video::VideoEndpoint};
 
-    use super::order_endpoints;
+    use super::{order_endpoints, select_session};
 
     fn devices(values: Vec<serde_json::Value>) -> DeviceRegistry {
         DeviceRegistry::new(

@@ -17,7 +17,7 @@ pub(super) struct ExplicitVideoEndpoints {
 
 pub(crate) struct ResolvedVideoEndpoints {
     pub(crate) endpoints: Vec<VideoEndpoint>,
-    pub(crate) endpoint_map: HashMap<String, VideoEndpoint>,
+    pub(crate) device_endpoints: HashMap<String, VideoEndpoint>,
 }
 
 impl ExplicitVideoEndpoints {
@@ -63,7 +63,7 @@ pub(crate) async fn resolve_video_endpoints(
     registry: &DeviceRegistry,
 ) -> Result<ResolvedVideoEndpoints> {
     let mut endpoints = Vec::new();
-    let mut endpoint_map = HashMap::new();
+    let mut device_endpoints = HashMap::new();
     let mut candidates = Vec::new();
     let mut probes = tokio::task::JoinSet::new();
 
@@ -78,7 +78,7 @@ pub(crate) async fn resolve_video_endpoints(
         );
         endpoints.push(endpoint.clone());
         candidates.push(endpoint.clone());
-        endpoint_map.insert(entry.id().to_owned(), endpoint.clone());
+        device_endpoints.insert(entry.id().to_owned(), endpoint.clone());
     }
 
     for device in registry.local_devices() {
@@ -103,7 +103,7 @@ pub(crate) async fn resolve_video_endpoints(
                     endpoint = %endpoint,
                     "auto-enabled local video endpoint"
                 );
-                endpoint_map.insert(device_id, endpoint.clone());
+                device_endpoints.insert(device_id, endpoint.clone());
                 endpoints.push(endpoint);
             }
             Ok((device_id, endpoint, Err(error))) => {
@@ -122,7 +122,7 @@ pub(crate) async fn resolve_video_endpoints(
 
     Ok(ResolvedVideoEndpoints {
         endpoints,
-        endpoint_map,
+        device_endpoints,
     })
 }
 

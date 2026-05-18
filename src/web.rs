@@ -15,7 +15,7 @@ use tracing::info;
 
 use crate::{
     devices::DeviceRegistry, local::Endpoint, mqtt::MqttRuntime, service::Shutdown,
-    thumbnail::ThumbnailRuntime, video::VideoRuntime,
+    thumbnail::ThumbnailRuntime, video::VideoStreams,
 };
 
 use self::current_print::CurrentPrintService;
@@ -24,7 +24,7 @@ use self::current_print::CurrentPrintService;
 pub(crate) struct AppState {
     current_print: CurrentPrintService,
     mqtt: MqttRuntime,
-    video: VideoRuntime,
+    video: VideoStreams,
     thumbnail: ThumbnailRuntime,
     devices: DeviceRegistry,
     shutdown: Shutdown,
@@ -66,7 +66,7 @@ pub(crate) async fn serve_http(bind: Endpoint, state: AppState, shutdown: Shutdo
 pub(crate) fn app_state(
     mqtt: MqttRuntime,
     registry: DeviceRegistry,
-    video: VideoRuntime,
+    video: VideoStreams,
     thumbnail: ThumbnailRuntime,
     shutdown: Shutdown,
 ) -> AppState {
