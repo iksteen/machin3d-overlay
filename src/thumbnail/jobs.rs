@@ -4,7 +4,10 @@ use std::{
 };
 
 use anyhow::{anyhow, Result};
-use tokio::sync::{mpsc, Mutex};
+use tokio::sync::{
+    mpsc::{self, error::TrySendError},
+    Mutex,
+};
 use tracing::debug;
 
 use crate::bambu::PrinterStatus;
@@ -16,16 +19,18 @@ use super::{
     ThumbnailStatus,
 };
 
+const JOB_QUEUE_CAPACITY: usize = 64;
+
 pub(super) struct ThumbnailJobs {
-    queue_tx: mpsc::UnboundedSender<ThumbnailJob>,
-    queue_rx: Mutex<mpsc::UnboundedReceiver<ThumbnailJob>>,
+    queue_tx: mpsc::Sender<ThumbnailJob>,
+    queue_rx: Mutex<mpsc::Receiver<ThumbnailJob>>,
     state: Mutex<ThumbnailJobState>,
     next_token: AtomicU64,
 }
 
 impl ThumbnailJobs {
     pub(super) fn new() -> Self {
-        let (sender, receiver) = mpsc::unbounded_channel();
+        let (sender, receiver) = mpsc::channel(JOB_QUEUE_CAPACITY);
         Self {
             queue_tx: sender,
             queue_rx: Mutex::new(receiver),
@@ -100,9 +105,10 @@ impl ThumbnailJobs {
     }
 
     pub(super) fn enqueue(&self, job: ThumbnailJob) -> Result<()> {
-        self.queue_tx
-            .send(job)
-            .map_err(|_| anyhow!("thumbnail job queue is closed"))
+        self.queue_tx.try_send(job).map_err(|error| match error {
+            TrySendError::Full(_) => anyhow!("thumbnail job queue is full"),
+            TrySendError::Closed(_) => anyhow!("thumbnail job queue is closed"),
+        })
     }
 
     fn next_token(&self) -> JobToken {

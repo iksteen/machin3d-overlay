@@ -9,7 +9,11 @@ use std::{
 use anyhow::{bail, Result};
 use bytes::Bytes;
 use tokio::{
-    sync::{broadcast, mpsc, Mutex, Notify},
+    sync::{
+        broadcast,
+        mpsc::{self, error::TrySendError},
+        Mutex, Notify,
+    },
     task::JoinSet,
 };
 use tokio_native_tls::TlsConnector;
@@ -24,6 +28,8 @@ use super::{
     worker::{observe_worker, VideoWorkerExit, VideoWorkerHandle, VideoWorkerTask},
 };
 
+const WORKER_QUEUE_CAPACITY: usize = 64;
+
 #[derive(Clone)]
 pub struct VideoStreams {
     state: Arc<VideoState>,
@@ -35,8 +41,8 @@ pub(super) struct VideoState {
     pub(super) tls: TlsConnector,
     pub(super) device_streams: Mutex<HashMap<String, Arc<DeviceVideoStream>>>,
     pub(super) remembered_endpoints: Mutex<HashMap<String, VideoEndpoint>>,
-    worker_tx: mpsc::UnboundedSender<VideoWorkerTask>,
-    worker_rx: Mutex<mpsc::UnboundedReceiver<VideoWorkerTask>>,
+    worker_tx: mpsc::Sender<VideoWorkerTask>,
+    worker_rx: Mutex<mpsc::Receiver<VideoWorkerTask>>,
 }
 
 pub(super) struct DeviceVideoStream {
@@ -63,7 +69,7 @@ impl VideoStreams {
         remembered_endpoints: HashMap<String, VideoEndpoint>,
     ) -> Result<Self> {
         let tls = device_tls::tokio_connector()?;
-        let (worker_tx, worker_rx) = mpsc::unbounded_channel();
+        let (worker_tx, worker_rx) = mpsc::channel(WORKER_QUEUE_CAPACITY);
         Ok(Self {
             state: Arc::new(VideoState {
                 registry,
@@ -186,15 +192,18 @@ fn spawn_worker(
         finished_for_task.store(true, Ordering::SeqCst);
     });
     let abort = handle.abort_handle();
-    if let Err(error) = state.worker_tx.send(VideoWorkerTask {
+    if let Err(error) = state.worker_tx.try_send(VideoWorkerTask {
         device_id,
         finished: Arc::clone(&finished),
         handle,
     }) {
-        let task = error.0;
+        let (reason, task) = match error {
+            TrySendError::Full(task) => ("full", task),
+            TrySendError::Closed(task) => ("closed", task),
+        };
         task.handle.abort();
         task.finished.store(true, Ordering::SeqCst);
-        bail!("video worker lifecycle monitor is not running");
+        bail!("video worker lifecycle monitor queue is {reason}");
     }
     Ok(VideoWorkerHandle::new(abort, finished))
 }

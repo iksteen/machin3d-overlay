@@ -1,21 +1,10 @@
 use serde::Deserialize;
 
-use bambu_overlay::bambu::{CurrentPrintResponse, PrinterStatus, TasksResponse, UserPreference};
-
-#[test]
-fn current_print_fixture_uses_observed_device_fields() {
-    let response: CurrentPrintResponse =
-        serde_json::from_str(include_str!("fixtures/current_print.json")).unwrap();
-
-    let device = response.devices.first().unwrap();
-    assert_eq!(device.id.as_deref(), Some("printer-a"));
-    assert_eq!(device.name.as_deref(), Some("Office X1"));
-    assert_eq!(device.online, Some(true));
-}
+use bambu_overlay::bambu::{DeviceListResponse, PrinterStatus, TasksResponse, UserPreference};
 
 #[test]
 fn bind_fixture_uses_observed_device_fields() {
-    let response: CurrentPrintResponse =
+    let response: DeviceListResponse =
         serde_json::from_str(include_str!("fixtures/bind.json")).unwrap();
 
     let device = response.devices.first().unwrap();

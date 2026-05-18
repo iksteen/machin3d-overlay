@@ -5,7 +5,7 @@ mod models;
 
 pub use client::BambuClient;
 pub use models::{
-    AmsState, AmsUnit, CloudDevice, CurrentPrintResponse, LoginResponse, PrinterStatus, Task,
+    AmsState, AmsUnit, CloudDevice, DeviceListResponse, LoginResponse, PrinterStatus, Task,
     TasksResponse, Tray, UserPreference,
 };
 

@@ -22,6 +22,12 @@ use super::{
 const LOCAL_FTPS_PORT: u16 = 990;
 const FTP_TIMEOUT: Duration = Duration::from_secs(20);
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum LocalThumbnailFailure {
+    Cloud3mfStillPreparing,
+    Unavailable,
+}
+
 pub(super) async fn fetch_thumbnail(
     device_id: &str,
     local: &LocalDevice,
@@ -40,16 +46,27 @@ pub(super) async fn fetch_thumbnail(
         .context("MQTT report does not include gcode_file for local thumbnail lookup")?;
     match fetch_local_3mf_thumbnail(local, filename).await {
         Ok(image) => Ok(ThumbnailStatus::Ready(image)),
-        Err(error) if local_cloud_3mf_may_still_be_preparing(report, &error) => {
-            Ok(ThumbnailStatus::Loading(format!(
+        Err(error) => match classify_local_thumbnail_failure(report, &error) {
+            LocalThumbnailFailure::Cloud3mfStillPreparing => Ok(ThumbnailStatus::Loading(format!(
                 "{}: {}",
                 local_cloud_3mf_prepare_message(report),
                 error_chain(&error)
-            )))
-        }
-        Err(error) => Err(error).with_context(|| {
-            format!("failed to fetch thumbnail from `{filename}` on local device `{device_id}`")
-        }),
+            ))),
+            LocalThumbnailFailure::Unavailable => Err(error).with_context(|| {
+                format!("failed to fetch thumbnail from `{filename}` on local device `{device_id}`")
+            }),
+        },
+    }
+}
+
+fn classify_local_thumbnail_failure(
+    report: &PrinterStatus,
+    error: &anyhow::Error,
+) -> LocalThumbnailFailure {
+    if local_cloud_3mf_may_still_be_preparing(report, error) {
+        LocalThumbnailFailure::Cloud3mfStillPreparing
+    } else {
+        LocalThumbnailFailure::Unavailable
     }
 }
 
@@ -224,7 +241,10 @@ fn push_unique(values: &mut Vec<String>, value: String) {
 
 #[cfg(test)]
 mod tests {
-    use super::local_file_candidates;
+    use crate::bambu::PrinterStatus;
+    use zip::result::ZipError;
+
+    use super::{classify_local_thumbnail_failure, local_file_candidates, LocalThumbnailFailure};
 
     #[test]
     fn local_file_candidates_try_cache_then_model() {
@@ -239,6 +259,32 @@ mod tests {
         assert_eq!(
             local_file_candidates("/cache/cube.3mf"),
             vec!["/cache/cube.3mf"]
+        );
+    }
+
+    #[test]
+    fn local_thumbnail_failure_classifies_incomplete_cloud_3mf_as_loading() {
+        let error = anyhow::Error::new(ZipError::InvalidArchive(
+            "could not find central directory".into(),
+        ));
+        let cloud_report = PrinterStatus {
+            print_type: Some("cloud".to_owned()),
+            file_prepare_percent: Some(100.0),
+            ..PrinterStatus::default()
+        };
+        let local_report = PrinterStatus {
+            print_type: Some("local".to_owned()),
+            file_prepare_percent: Some(100.0),
+            ..PrinterStatus::default()
+        };
+
+        assert_eq!(
+            classify_local_thumbnail_failure(&cloud_report, &error),
+            LocalThumbnailFailure::Cloud3mfStillPreparing
+        );
+        assert_eq!(
+            classify_local_thumbnail_failure(&local_report, &error),
+            LocalThumbnailFailure::Unavailable
         );
     }
 }

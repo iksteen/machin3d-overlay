@@ -16,7 +16,7 @@ pub struct LoginResponse {
 }
 
 #[derive(Debug, Clone, Default, Deserialize)]
-pub struct CurrentPrintResponse {
+pub struct DeviceListResponse {
     #[serde(default)]
     pub devices: Vec<CloudDevice>,
 }

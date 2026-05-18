@@ -8,7 +8,7 @@ use tracing::debug;
 
 use super::{
     error::{api_error_message, response_body_is_error, ApiStatus},
-    models::{CurrentPrintResponse, LoginRequest, LoginResponse, TasksResponse, UserPreference},
+    models::{DeviceListResponse, LoginRequest, LoginResponse, TasksResponse, UserPreference},
     USER_AGENT,
 };
 
@@ -58,16 +58,7 @@ impl BambuClient {
             .await
     }
 
-    pub async fn current_print(&self, access_token: &str) -> Result<CurrentPrintResponse> {
-        self.request_json(
-            Method::GET,
-            "/v1/iot-service/api/user/print",
-            Some(access_token),
-        )
-        .await
-    }
-
-    pub async fn bound_devices(&self, access_token: &str) -> Result<CurrentPrintResponse> {
+    pub async fn bound_devices(&self, access_token: &str) -> Result<DeviceListResponse> {
         self.request_json(
             Method::GET,
             "/v1/iot-service/api/user/bind",
@@ -159,9 +150,6 @@ impl BambuClient {
             .timeout(self.timeout);
         if let Some(token) = access_token {
             request = request.bearer_auth(token);
-        }
-        if path == "/v1/iot-service/api/user/print" {
-            request = request.query(&[("force", "true")]);
         }
         send_and_parse(request, &method, path).await
     }

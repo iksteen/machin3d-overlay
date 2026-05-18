@@ -126,7 +126,7 @@ fn finalize_local_device(device_id: String, endpoint: LocalEndpointConfig) -> Re
 
 #[cfg(test)]
 mod tests {
-    use super::{resolve_local_device_access, should_enumerate_cloud_catalog};
+    use super::{resolve_devices, resolve_local_device_access, should_enumerate_cloud_catalog};
     use crate::{
         devices::{metadata::BindCatalog, video::ExplicitVideoEndpoints},
         local::LocalEndpointConfig,
@@ -196,5 +196,22 @@ mod tests {
             &[],
             &[local_arg("192.168.1.50,12345678")]
         ));
+    }
+
+    #[tokio::test]
+    async fn explicit_cloud_devices_resolve_without_cloud_session() {
+        let registry = resolve_devices(None, &["printer-a".to_owned()], &[], &[])
+            .await
+            .expect("explicit cloud device should not require /bind metadata");
+
+        assert_eq!(registry.cloud_mqtt_ids(), vec!["printer-a".to_owned()]);
+        assert_eq!(registry.first().unwrap().id(), "printer-a");
+    }
+
+    #[tokio::test]
+    async fn no_configured_devices_errors_without_cloud_enumeration() {
+        let error = resolve_devices(None, &[], &[], &[]).await.unwrap_err();
+
+        assert!(error.to_string().contains("no devices configured"));
     }
 }

@@ -1,3 +1,10 @@
+//! Runtime state for MQTT-derived printer reports.
+//!
+//! Every state mutation increments the snapshot revision before subscribers are
+//! notified. Consumers may treat a snapshot as coherent and use its revision to
+//! order derived work, such as thumbnail fetch scheduling, against later
+//! disconnects or task changes.
+
 use std::{collections::HashMap, sync::Arc};
 
 use chrono::{DateTime, Utc};
@@ -582,5 +589,35 @@ mod tests {
         assert!(!snapshot.devices.contains_key("printer-a"));
         assert!(!snapshot.connections.contains_key("printer-a"));
         assert!(snapshot.connections.contains_key("printer-b"));
+    }
+
+    #[tokio::test]
+    async fn snapshot_revision_increments_once_per_state_mutation() {
+        let runtime = MqttRuntime::new();
+        assert_eq!(runtime.snapshot().await.revision, 0);
+
+        runtime
+            .register_connection("printer-a", vec!["printer-a".to_owned()])
+            .await;
+        assert_eq!(runtime.snapshot().await.revision, 1);
+
+        runtime.set_connection_connected("printer-a").await;
+        assert_eq!(runtime.snapshot().await.revision, 2);
+
+        runtime
+            .merge_report(
+                "printer-a",
+                PrinterStatus {
+                    status: Some("RUNNING".to_owned()),
+                    ..PrinterStatus::default()
+                },
+            )
+            .await;
+        assert_eq!(runtime.snapshot().await.revision, 3);
+
+        runtime.set_connection_disconnected("printer-a").await;
+        let snapshot = runtime.snapshot().await;
+        assert_eq!(snapshot.revision, 4);
+        assert!(!snapshot.devices.contains_key("printer-a"));
     }
 }

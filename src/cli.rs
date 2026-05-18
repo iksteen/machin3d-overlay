@@ -106,29 +106,8 @@ struct ServeArgs {
         help_heading = "Cloud"
     )]
     timeout: f64,
-    #[arg(
-        long = "cloud-mqtt",
-        value_name = "HOST[:PORT]",
-        default_value = MQTT_HOST,
-        help = "Bambu Cloud MQTT endpoint. Port defaults to 8883",
-        help_heading = "Cloud"
-    )]
-    cloud_mqtt: MqttEndpoint,
-    #[arg(
-        long = "cloud-device",
-        value_name = "DEVICE_ID",
-        value_parser = parse_cloud_device_id,
-        help = "Explicit Bambu Cloud MQTT device ID; repeat to add devices. When set, /bind enumeration is skipped",
-        help_heading = "Cloud"
-    )]
-    cloud_devices: Vec<String>,
-    #[arg(
-        long = "local-device",
-        value_name = "HOST[:PORT][,ACCESS_CODE[,NAME]]",
-        help = "Printer LAN MQTT device; repeat for multiple printers. Port defaults to 8883. The device ID is inferred from the MQTT certificate. ACCESS_CODE can be provided here or looked up from /bind when needed",
-        help_heading = "Local LAN"
-    )]
-    local_devices: Vec<LocalEndpointConfig>,
+    #[command(flatten)]
+    devices: DeviceSelectionArgs,
     #[arg(
         long = "video-device",
         value_name = "HOST[:PORT][,ACCESS_CODE]",
@@ -150,6 +129,19 @@ struct MqttArgs {
         help_heading = "Cloud"
     )]
     timeout: f64,
+    #[command(flatten)]
+    devices: DeviceSelectionArgs,
+    #[arg(
+        long = "device",
+        value_name = "DEVICE_ID",
+        help = "Device ID to monitor. Defaults to the first resolved device",
+        help_heading = "Selection"
+    )]
+    device: Option<String>,
+}
+
+#[derive(Args, Clone)]
+struct DeviceSelectionArgs {
     #[arg(
         long = "cloud-mqtt",
         value_name = "HOST[:PORT]",
@@ -173,13 +165,6 @@ struct MqttArgs {
         help_heading = "Local LAN"
     )]
     local_devices: Vec<LocalEndpointConfig>,
-    #[arg(
-        long = "device",
-        value_name = "DEVICE_ID",
-        help = "Device ID to monitor. Defaults to the first resolved device",
-        help_heading = "Selection"
-    )]
-    device: Option<String>,
 }
 
 pub async fn run(cli: Cli) -> Result<()> {
@@ -264,14 +249,14 @@ async fn devices_cmd(args: DevicesArgs) -> Result<()> {
 }
 
 async fn serve_cmd(args: ServeArgs) -> Result<()> {
-    validate_devices(&args.cloud_devices)?;
+    validate_devices(&args.devices.cloud_devices)?;
     let config = ServerConfig::from(&args);
     let cloud = optional_token_client(args.token.token_file.clone(), args.timeout)?;
     serve(cloud, config).await
 }
 
 async fn mqtt_cmd(args: MqttArgs) -> Result<()> {
-    validate_devices(&args.cloud_devices)?;
+    validate_devices(&args.devices.cloud_devices)?;
     let cloud = optional_token_client(args.token.token_file.clone(), args.timeout)?;
     monitor_mqtt(cloud, MonitorConfig::from(&args)).await
 }
@@ -333,9 +318,9 @@ impl From<&ServeArgs> for ServerConfig {
     fn from(args: &ServeArgs) -> Self {
         Self {
             bind: args.bind.clone(),
-            cloud_mqtt: args.cloud_mqtt.clone(),
-            local_devices: args.local_devices.clone(),
-            cloud_devices: args.cloud_devices.clone(),
+            cloud_mqtt: args.devices.cloud_mqtt.clone(),
+            local_devices: args.devices.local_devices.clone(),
+            cloud_devices: args.devices.cloud_devices.clone(),
             video_endpoints: args.video_devices.clone(),
         }
     }
@@ -344,9 +329,9 @@ impl From<&ServeArgs> for ServerConfig {
 impl From<&MqttArgs> for MonitorConfig {
     fn from(args: &MqttArgs) -> Self {
         Self {
-            cloud_mqtt: args.cloud_mqtt.clone(),
-            local_devices: args.local_devices.clone(),
-            cloud_devices: args.cloud_devices.clone(),
+            cloud_mqtt: args.devices.cloud_mqtt.clone(),
+            local_devices: args.devices.local_devices.clone(),
+            cloud_devices: args.devices.cloud_devices.clone(),
             device: args.device.clone(),
         }
     }

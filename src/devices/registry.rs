@@ -1,3 +1,11 @@
+//! Resolved, startup-stable device catalog.
+//!
+//! `DeviceRegistry` is the authority for devices known by the service after
+//! startup discovery has finished. Local devices intentionally override cloud
+//! entries with the same ID, because local MQTT owns the live data path in that
+//! scenario. Credentials are kept behind accessors so web/API payloads cannot
+//! accidentally serialize access codes.
+
 use std::collections::{HashMap, HashSet};
 
 use crate::{
@@ -319,5 +327,38 @@ mod tests {
         );
 
         assert_eq!(registry.cloud_mqtt_ids(), vec!["printer-a".to_owned()]);
+    }
+
+    #[test]
+    fn registry_access_code_prefers_local_credentials() {
+        let registry = DeviceRegistry::new(
+            vec![CloudDevice {
+                id: Some("printer-a".to_owned()),
+                access_code: Some("cloud-code".to_owned()),
+                ..CloudDevice::default()
+            }],
+            vec![local_device("printer-a", Some("Office"))],
+        );
+
+        assert_eq!(
+            registry.get("printer-a").unwrap().access_code(),
+            Some("12345678")
+        );
+    }
+
+    #[test]
+    fn registry_source_follows_active_live_capability() {
+        let registry = DeviceRegistry::new(
+            vec![CloudDevice {
+                id: Some("printer-a".to_owned()),
+                ..CloudDevice::default()
+            }],
+            vec![local_device("printer-b", Some("Office"))],
+        );
+
+        assert!(registry.get("printer-a").unwrap().has_cloud_mqtt());
+        assert!(registry.get("printer-a").unwrap().local().is_none());
+        assert!(!registry.get("printer-b").unwrap().has_cloud_mqtt());
+        assert!(registry.get("printer-b").unwrap().local().is_some());
     }
 }
