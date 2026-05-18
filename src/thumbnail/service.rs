@@ -5,6 +5,7 @@ use std::{
 };
 
 use anyhow::{ensure, Result};
+use tokio::sync::Semaphore;
 use tokio::task::{Id, JoinError, JoinSet};
 use tracing::{debug, error, warn};
 
@@ -25,6 +26,7 @@ use super::{
 
 const LOADING_RETRY_DELAY: Duration = Duration::from_secs(2);
 const MISSING_RETRY_DELAY: Duration = Duration::from_secs(30);
+const MAX_CONCURRENT_THUMBNAIL_FETCHES: usize = 3;
 
 #[derive(Clone)]
 pub(crate) struct ThumbnailService {
@@ -36,6 +38,7 @@ struct ThumbnailInner {
     cloud: Option<CloudSession>,
     registry: DeviceRegistry,
     jobs: ThumbnailJobs,
+    fetch_permits: Semaphore,
 }
 
 impl ThumbnailService {
@@ -50,6 +53,7 @@ impl ThumbnailService {
                 cloud,
                 registry,
                 jobs: ThumbnailJobs::new(),
+                fetch_permits: Semaphore::new(MAX_CONCURRENT_THUMBNAIL_FETCHES),
             }),
         }
     }
@@ -180,6 +184,15 @@ impl ThumbnailService {
             }
             JobStart::Stale => return,
         }
+
+        let Ok(_permit) = self.inner.fetch_permits.acquire().await else {
+            self.finish_failed_job(
+                job,
+                "thumbnail fetch concurrency limiter is closed".to_owned(),
+            )
+            .await;
+            return;
+        };
 
         let (status, retry_after) = match source::fetch_thumbnail(
             self.inner.cloud.as_ref(),
