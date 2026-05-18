@@ -2,11 +2,10 @@ use std::collections::HashSet;
 
 use axum::{extract::State, Json};
 use serde::Serialize;
-use url::form_urlencoded;
 
 use crate::devices::{DeviceRegistry, DeviceSource};
 
-use super::AppState;
+use super::{paths, AppState};
 
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -71,14 +70,11 @@ fn device_source_label(source: DeviceSource) -> &'static str {
 }
 
 fn device_paths(device_id: &str, has_video: bool) -> KnownDevicePaths {
-    let query = form_urlencoded::Serializer::new(String::new())
-        .append_pair("device", device_id)
-        .finish();
     KnownDevicePaths {
-        horizontal: format!("/overlay?{query}"),
-        vertical: format!("/vertical?{query}"),
-        thumbnail: format!("/api/thumbnail?{query}"),
-        video: has_video.then(|| format!("/api/video.mjpeg?{query}")),
+        horizontal: paths::horizontal_overlay(device_id),
+        vertical: paths::vertical_overlay(device_id),
+        thumbnail: paths::thumbnail(device_id),
+        video: has_video.then(|| paths::video(device_id)),
     }
 }
 
