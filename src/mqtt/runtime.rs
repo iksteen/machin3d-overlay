@@ -116,53 +116,50 @@ impl MqttRuntime {
         device_ids: Vec<String>,
     ) {
         let key = key.into();
-        let mut state = self.inner.write().await;
         let device_ids = normalized_device_ids(device_ids);
-        let previous_device_ids = state
-            .connections
-            .get(&key)
-            .map(|connection| connection.device_ids.clone())
-            .unwrap_or_default();
-        remove_devices_from_other_connections(&mut state.connections, &key, &device_ids);
-        state.connections.entry(key).or_default().device_ids = device_ids;
-        remove_unregistered_reports(&mut state, previous_device_ids);
-        bump_revision(&mut state);
+        self.mutate_state(|state| {
+            let previous_device_ids = state
+                .connections
+                .get(&key)
+                .map(|connection| connection.device_ids.clone())
+                .unwrap_or_default();
+            remove_devices_from_other_connections(&mut state.connections, &key, &device_ids);
+            state.connections.entry(key).or_default().device_ids = device_ids;
+            remove_unregistered_reports(state, previous_device_ids);
+        })
+        .await;
     }
 
     pub(crate) async fn set_connection_connecting(&self, key: impl Into<String>) {
-        let mut state = self.inner.write().await;
-        let connection = state.connections.entry(key.into()).or_default();
-        connection.status = MqttTransportStatus::Connecting;
-        connection.error = None;
-        bump_revision(&mut state);
-        refresh_status(&mut state);
-        drop(state);
-        self.notify();
+        let key = key.into();
+        self.mutate_state(|state| {
+            let connection = state.connections.entry(key).or_default();
+            connection.status = MqttTransportStatus::Connecting;
+            connection.error = None;
+        })
+        .await;
     }
 
     pub(crate) async fn set_connection_connected(&self, key: impl Into<String>) {
-        let mut state = self.inner.write().await;
-        let connection = state.connections.entry(key.into()).or_default();
-        connection.status = MqttTransportStatus::Connected {
-            connected_at: Utc::now(),
-        };
-        connection.error = None;
-        bump_revision(&mut state);
-        refresh_status(&mut state);
-        drop(state);
-        self.notify();
+        let key = key.into();
+        self.mutate_state(|state| {
+            let connection = state.connections.entry(key).or_default();
+            connection.status = MqttTransportStatus::Connected {
+                connected_at: Utc::now(),
+            };
+            connection.error = None;
+        })
+        .await;
     }
 
     pub(crate) async fn set_connection_disconnected(&self, key: impl Into<String>) {
         let key = key.into();
-        let mut state = self.inner.write().await;
-        let connection = state.connections.entry(key.clone()).or_default();
-        connection.status = MqttTransportStatus::Disconnected;
-        clear_reports_for_connection(&mut state, &key);
-        bump_revision(&mut state);
-        refresh_status(&mut state);
-        drop(state);
-        self.notify();
+        self.mutate_state(|state| {
+            let connection = state.connections.entry(key.clone()).or_default();
+            connection.status = MqttTransportStatus::Disconnected;
+            clear_reports_for_connection(state, &key);
+        })
+        .await;
     }
 
     pub(crate) async fn set_connection_error(
@@ -171,40 +168,46 @@ impl MqttRuntime {
         error: impl Into<String>,
     ) {
         let key = key.into();
-        let mut state = self.inner.write().await;
-        let connection = state.connections.entry(key.clone()).or_default();
-        connection.status = MqttTransportStatus::Disconnected;
-        connection.error = Some(error.into());
-        clear_reports_for_connection(&mut state, &key);
-        bump_revision(&mut state);
-        refresh_status(&mut state);
-        drop(state);
-        self.notify();
+        let error = error.into();
+        self.mutate_state(|state| {
+            let connection = state.connections.entry(key.clone()).or_default();
+            connection.status = MqttTransportStatus::Disconnected;
+            connection.error = Some(error);
+            clear_reports_for_connection(state, &key);
+        })
+        .await;
     }
 
     pub(crate) async fn merge_report(&self, device_id: &str, report: PrinterStatus) {
+        self.mutate_state(|state| {
+            let now = Utc::now();
+            let device = state.devices.entry(device_id.to_owned()).or_default();
+            let activity = if let Some(report_state) = &mut device.report {
+                report_state.report.merge(report);
+                report_state.last_report_at = now;
+                PrintActivity::from_report(&report_state.report)
+            } else {
+                let report_state = device.report.insert(MqttReportState {
+                    report,
+                    last_report_at: now,
+                });
+                PrintActivity::from_report(&report_state.report)
+            };
+            if let PrintActivity::Unknown(gcode_state) = activity {
+                tracing::debug!(
+                    device_id,
+                    gcode_state,
+                    "unknown MQTT printer gcode_state; treating task as inactive"
+                );
+            }
+            state.updated_at = Some(now.to_rfc3339());
+        })
+        .await;
+    }
+
+    async fn mutate_state(&self, mutation: impl FnOnce(&mut MqttState)) {
         let mut state = self.inner.write().await;
-        let now = Utc::now();
-        let device = state.devices.entry(device_id.to_owned()).or_default();
-        let activity = if let Some(report_state) = &mut device.report {
-            report_state.report.merge(report);
-            report_state.last_report_at = now;
-            PrintActivity::from_report(&report_state.report)
-        } else {
-            let report_state = device.report.insert(MqttReportState {
-                report,
-                last_report_at: now,
-            });
-            PrintActivity::from_report(&report_state.report)
-        };
-        if let PrintActivity::Unknown(gcode_state) = activity {
-            tracing::debug!(
-                device_id,
-                gcode_state,
-                "unknown MQTT printer gcode_state; treating task as inactive"
-            );
-        }
-        state.updated_at = Some(now.to_rfc3339());
+        mutation(&mut state);
         bump_revision(&mut state);
         refresh_status(&mut state);
         drop(state);
@@ -387,9 +390,26 @@ impl Default for MqttRuntime {
 
 #[cfg(test)]
 mod tests {
+    use std::time::Duration;
+
     use crate::{bambu::PrinterStatus, mqtt::MqttConnectionStatus};
 
     use super::MqttRuntime;
+
+    #[tokio::test]
+    async fn register_connection_notifies_subscribers() {
+        let runtime = MqttRuntime::new();
+        let mut changes = runtime.subscribe();
+
+        runtime
+            .register_connection("printer-a", vec!["printer-a".to_owned()])
+            .await;
+
+        tokio::time::timeout(Duration::from_secs(1), changes.recv())
+            .await
+            .expect("registration should notify subscribers")
+            .expect("change channel should stay open");
+    }
 
     #[tokio::test]
     async fn snapshot_marks_reports_fresh_only_while_connection_is_connected() {
