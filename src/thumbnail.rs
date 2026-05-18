@@ -5,14 +5,15 @@ mod job_state;
 mod jobs;
 mod local;
 mod readiness;
-mod runtime;
+mod service;
+mod source;
 
 use std::io::Read;
 
 use anyhow::{ensure, Context, Result};
 use bytes::Bytes;
 
-pub(crate) use runtime::ThumbnailRuntime;
+pub(crate) use service::ThumbnailService;
 
 const MAX_3MF_SIZE: usize = 512 * 1024 * 1024;
 const MAX_THUMBNAIL_SIZE: usize = 32 * 1024 * 1024;

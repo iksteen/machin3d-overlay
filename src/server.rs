@@ -10,7 +10,7 @@ use crate::{
     local::{Endpoint, LocalDevice, LocalEndpointConfig, MqttEndpoint},
     mqtt::{supervise_target, MqttRuntime, MqttTarget},
     service::{wait_for_process_shutdown_signal, ServiceTasks, Shutdown},
-    thumbnail::ThumbnailRuntime,
+    thumbnail::ThumbnailService,
     video::{VideoEndpoint, VideoStreams},
     web::{app_state, serve_http, AppState},
 };
@@ -83,7 +83,7 @@ struct ServiceGraph {
 struct BackgroundServices {
     mqtt: MqttRuntime,
     video: VideoStreams,
-    thumbnail: ThumbnailRuntime,
+    thumbnail: ThumbnailService,
     cloud_mqtt: Option<MqttTarget>,
     local_devices: Vec<LocalDevice>,
 }
@@ -111,7 +111,7 @@ impl ServiceGraph {
             video_endpoints.endpoints,
             video_endpoints.device_endpoints,
         )?;
-        let thumbnail = ThumbnailRuntime::new(mqtt.clone(), cloud.clone(), registry.clone());
+        let thumbnail = ThumbnailService::new(mqtt.clone(), cloud.clone(), registry.clone());
         let local_devices = registry.local_devices();
         let state = app_state(
             mqtt.clone(),

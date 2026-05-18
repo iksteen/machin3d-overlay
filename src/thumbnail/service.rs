@@ -4,27 +4,30 @@ use std::{
     time::{Duration, Instant},
 };
 
-use anyhow::{ensure, Context, Result};
+use anyhow::{ensure, Result};
 use tokio::task::{Id, JoinError, JoinSet};
 use tracing::{debug, error, warn};
 
 use crate::{
-    bambu::PrinterStatus, cloud::CloudSession, devices::DeviceRegistry, mqtt::MqttRuntime,
+    bambu::PrinterStatus,
+    cloud::CloudSession,
+    devices::DeviceRegistry,
+    mqtt::{MqttDeviceState, MqttRuntime},
     service::ShutdownReceiver,
 };
 
 use super::{
     cache::TaskKey,
-    cloud, error_chain,
+    error_chain,
     jobs::{JobCompletion, JobOrder, JobSchedule, JobStart, ThumbnailJob, ThumbnailJobs},
-    local, ThumbnailStatus,
+    source, ThumbnailStatus,
 };
 
 const LOADING_RETRY_DELAY: Duration = Duration::from_secs(2);
 const MISSING_RETRY_DELAY: Duration = Duration::from_secs(30);
 
 #[derive(Clone)]
-pub(crate) struct ThumbnailRuntime {
+pub(crate) struct ThumbnailService {
     inner: Arc<ThumbnailInner>,
 }
 
@@ -35,7 +38,7 @@ struct ThumbnailInner {
     jobs: ThumbnailJobs,
 }
 
-impl ThumbnailRuntime {
+impl ThumbnailService {
     pub(crate) fn new(
         mqtt: MqttRuntime,
         cloud: Option<CloudSession>,
@@ -55,7 +58,7 @@ impl ThumbnailRuntime {
         &self,
         requested_device_id: Option<&str>,
     ) -> Result<ThumbnailStatus> {
-        let Some(device_id) = self.select_device_id(requested_device_id).await? else {
+        let Some(device_id) = self.select_device_id(requested_device_id)? else {
             return Ok(ThumbnailStatus::Missing("no device selected".to_owned()));
         };
 
@@ -85,10 +88,10 @@ impl ThumbnailRuntime {
                     self.refresh_changed_devices().await;
                 }
                 Some(job) = job_rx.recv() => {
-                    let runtime = self.clone();
+                    let service = self.clone();
                     let tracked_job = job.clone();
                     let handle = jobs.spawn(async move {
-                        runtime.run_fetch_job(job).await;
+                        service.run_fetch_job(job).await;
                     });
                     running_jobs.insert(handle.id(), tracked_job);
                 }
@@ -101,30 +104,11 @@ impl ThumbnailRuntime {
 
     async fn refresh_changed_devices(&self) {
         let snapshot = self.inner.mqtt.snapshot().await;
-        let states = snapshot.devices;
+        let order = JobOrder::new(snapshot.revision);
         for device in self.inner.registry.devices() {
             let device_id = device.id.as_str();
-            let Some(state) = states.get(device_id) else {
-                self.inner
-                    .jobs
-                    .clear(device_id, JobOrder::new(snapshot.revision))
-                    .await;
-                continue;
-            };
-            let Some(task) = TaskKey::from_state(state) else {
-                self.inner
-                    .jobs
-                    .clear(device_id, JobOrder::new(snapshot.revision))
-                    .await;
-                continue;
-            };
             if let Err(error) = self
-                .schedule_fetch(
-                    device_id,
-                    &state.report,
-                    task,
-                    JobOrder::new(snapshot.revision),
-                )
+                .refresh_snapshot_device(device_id, snapshot.devices.get(device_id), order)
                 .await
             {
                 warn!(
@@ -138,28 +122,30 @@ impl ThumbnailRuntime {
 
     async fn refresh_device(&self, device_id: &str) -> Result<()> {
         let snapshot = self.inner.mqtt.snapshot().await;
-        let states = snapshot.devices;
-        let Some(state) = states.get(device_id) else {
-            self.inner
-                .jobs
-                .clear(device_id, JobOrder::new(snapshot.revision))
-                .await;
-            return Ok(());
-        };
-        let Some(task) = TaskKey::from_state(state) else {
-            self.inner
-                .jobs
-                .clear(device_id, JobOrder::new(snapshot.revision))
-                .await;
-            return Ok(());
-        };
-        self.schedule_fetch(
+        self.refresh_snapshot_device(
             device_id,
-            &state.report,
-            task,
+            snapshot.devices.get(device_id),
             JobOrder::new(snapshot.revision),
         )
         .await
+    }
+
+    async fn refresh_snapshot_device(
+        &self,
+        device_id: &str,
+        state: Option<&MqttDeviceState>,
+        order: JobOrder,
+    ) -> Result<()> {
+        let Some(state) = state else {
+            self.inner.jobs.clear(device_id, order).await;
+            return Ok(());
+        };
+        let Some(task) = TaskKey::from_state(state) else {
+            self.inner.jobs.clear(device_id, order).await;
+            return Ok(());
+        };
+        self.schedule_fetch(device_id, &state.report, task, order)
+            .await
     }
 
     async fn schedule_fetch(
@@ -208,7 +194,14 @@ impl ThumbnailRuntime {
             JobStart::Stale => return,
         }
 
-        let (status, retry_after) = match self.fetch_thumbnail(device_id, &job.report).await {
+        let (status, retry_after) = match source::fetch_thumbnail(
+            self.inner.cloud.as_ref(),
+            &self.inner.registry,
+            device_id,
+            &job.report,
+        )
+        .await
+        {
             Ok(ThumbnailStatus::Ready(image)) => {
                 debug!(device_id, "cached print thumbnail");
                 (ThumbnailStatus::Ready(image), None)
@@ -308,30 +301,7 @@ impl ThumbnailRuntime {
         }
     }
 
-    async fn fetch_thumbnail(
-        &self,
-        device_id: &str,
-        report: &PrinterStatus,
-    ) -> Result<ThumbnailStatus> {
-        let entry = self
-            .inner
-            .registry
-            .get(device_id)
-            .with_context(|| format!("device `{device_id}` is not known"))?;
-
-        if let Some(local) = entry.local() {
-            return local::fetch_thumbnail(device_id, local, report).await;
-        }
-        if entry.has_cloud_mqtt() {
-            return cloud::fetch_thumbnail(self.inner.cloud.as_ref(), device_id, report)
-                .await
-                .map(ThumbnailStatus::Ready);
-        }
-
-        anyhow::bail!("device `{device_id}` has no thumbnail data source")
-    }
-
-    async fn select_device_id(&self, requested_device_id: Option<&str>) -> Result<Option<String>> {
+    fn select_device_id(&self, requested_device_id: Option<&str>) -> Result<Option<String>> {
         let requested_device_id = requested_device_id
             .map(str::trim)
             .filter(|device_id| !device_id.is_empty());

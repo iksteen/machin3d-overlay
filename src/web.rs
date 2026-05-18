@@ -14,7 +14,7 @@ use tracing::info;
 
 use crate::{
     devices::DeviceRegistry, local::Endpoint, mqtt::MqttRuntime, service::Shutdown,
-    thumbnail::ThumbnailRuntime, video::VideoStreams,
+    thumbnail::ThumbnailService, video::VideoStreams,
 };
 
 use self::current_print::CurrentPrintService;
@@ -24,7 +24,7 @@ pub(crate) struct AppState {
     current_print: CurrentPrintService,
     mqtt: MqttRuntime,
     video: VideoStreams,
-    thumbnail: ThumbnailRuntime,
+    thumbnail: ThumbnailService,
     devices: DeviceRegistry,
     shutdown: Shutdown,
 }
@@ -66,7 +66,7 @@ pub(crate) fn app_state(
     mqtt: MqttRuntime,
     registry: DeviceRegistry,
     video: VideoStreams,
-    thumbnail: ThumbnailRuntime,
+    thumbnail: ThumbnailService,
     shutdown: Shutdown,
 ) -> AppState {
     let devices = registry.clone();
