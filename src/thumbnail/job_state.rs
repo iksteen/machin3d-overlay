@@ -39,9 +39,7 @@ pub(super) struct JobToken(u64);
 
 #[derive(Default)]
 pub(super) struct ThumbnailJobState {
-    entries: HashMap<String, ThumbnailEntry>,
-    devices: HashMap<String, DeviceJobState>,
-    latest_orders: HashMap<String, JobOrder>,
+    devices: HashMap<String, DeviceThumbnailState>,
 }
 
 #[derive(Debug, Clone)]
@@ -50,6 +48,13 @@ struct ThumbnailEntry {
     status: ThumbnailStatus,
     retry_after: Option<Instant>,
     order: JobOrder,
+}
+
+#[derive(Default)]
+struct DeviceThumbnailState {
+    entry: Option<ThumbnailEntry>,
+    job: Option<DeviceJobState>,
+    latest_order: Option<JobOrder>,
 }
 
 struct DeviceJobState {
@@ -62,23 +67,73 @@ struct DeviceJobState {
 
 impl ThumbnailJobState {
     pub(super) fn status(&self, device_id: &str) -> ThumbnailStatus {
-        self.entries
+        self.devices
             .get(device_id)
-            .map(|entry| entry.status.clone())
+            .and_then(DeviceThumbnailState::status)
             .unwrap_or_else(|| ThumbnailStatus::Missing("thumbnail is not available".to_owned()))
     }
 
     pub(super) fn schedule(&mut self, job: ThumbnailJob) -> JobSchedule {
-        if self.is_stale(&job.device_id, job.order) {
+        self.devices
+            .entry(job.device_id.clone())
+            .or_default()
+            .schedule(job)
+    }
+
+    pub(super) fn clear(&mut self, device_id: &str, order: JobOrder) {
+        self.devices
+            .entry(device_id.to_owned())
+            .or_default()
+            .clear(order);
+    }
+
+    pub(super) fn start(&mut self, job: &ThumbnailJob) -> JobStart {
+        self.devices
+            .get_mut(&job.device_id)
+            .map(|device| device.start(job))
+            .unwrap_or(JobStart::Stale)
+    }
+
+    pub(super) fn finish(
+        &mut self,
+        job: &ThumbnailJob,
+        status: ThumbnailStatus,
+        retry_after: Option<Instant>,
+    ) -> JobCompletion {
+        self.devices
+            .get_mut(&job.device_id)
+            .map(|device| device.finish(job, status, retry_after))
+            .unwrap_or(JobCompletion::Stale)
+    }
+
+    pub(super) fn send_failed(
+        &mut self,
+        device_id: &str,
+        task: TaskKey,
+        order: JobOrder,
+        message: String,
+        retry_after: Instant,
+    ) {
+        self.devices
+            .entry(device_id.to_owned())
+            .or_default()
+            .send_failed(task, order, message, retry_after);
+    }
+}
+
+impl DeviceThumbnailState {
+    fn status(&self) -> Option<ThumbnailStatus> {
+        self.entry.as_ref().map(|entry| entry.status.clone())
+    }
+
+    fn schedule(&mut self, job: ThumbnailJob) -> JobSchedule {
+        if self.is_stale(job.order) {
             return JobSchedule::Unchanged;
         }
-        self.remember_order(&job.device_id, job.order);
-        let existing_entry_covers_task = self
-            .entries
-            .get_mut(&job.device_id)
-            .is_some_and(|entry| entry.cover_or_refresh_order(&job.task, job.order));
-        if existing_entry_covers_task {
-            if let Some(device) = self.devices.get_mut(&job.device_id) {
+        self.remember_order(job.order);
+
+        if self.entry_covers_task(&job) {
+            if let Some(device) = &mut self.job {
                 if device.running == job.task {
                     if !device.started && job.order > device.order {
                         device.order = device.order.max(job.order);
@@ -102,159 +157,178 @@ impl ThumbnailJobState {
             return JobSchedule::Unchanged;
         }
 
-        self.entries.insert(
-            job.device_id.clone(),
-            ThumbnailEntry {
-                task: job.task.clone(),
-                status: ThumbnailStatus::Loading("print thumbnail is loading".to_owned()),
-                retry_after: None,
-                order: job.order,
-            },
-        );
+        self.entry = Some(ThumbnailEntry::loading(job.task.clone(), job.order));
 
-        if let Some(device) = self.devices.get_mut(&job.device_id) {
-            let job_is_newer_than_running = job.order > device.order;
-            device.order = device.order.max(job.order);
-            if device.running == job.task {
-                if !device.started && job_is_newer_than_running {
-                    device.pending = Some(job);
-                    return JobSchedule::Pending;
-                }
-                if device.pending.is_some() {
-                    device.pending = None;
-                    return JobSchedule::Pending;
-                }
-                return JobSchedule::Unchanged;
-            }
-            if device
-                .pending
-                .as_ref()
-                .is_some_and(|pending| pending.task == job.task)
-            {
+        let Some(device) = &mut self.job else {
+            self.job = Some(DeviceJobState::new(&job));
+            return JobSchedule::Start(Box::new(job));
+        };
+
+        let job_is_newer_than_running = job.order > device.order;
+        device.order = device.order.max(job.order);
+        if device.running == job.task {
+            if !device.started && job_is_newer_than_running {
                 device.pending = Some(job);
-                return JobSchedule::Unchanged;
+                return JobSchedule::Pending;
             }
-
+            if device.pending.is_some() {
+                device.pending = None;
+                return JobSchedule::Pending;
+            }
+            return JobSchedule::Unchanged;
+        }
+        if device
+            .pending
+            .as_ref()
+            .is_some_and(|pending| pending.task == job.task)
+        {
             device.pending = Some(job);
-            return JobSchedule::Pending;
+            return JobSchedule::Unchanged;
         }
 
-        self.devices.insert(
-            job.device_id.clone(),
-            DeviceJobState {
-                running: job.task.clone(),
-                token: job.token,
-                order: job.order,
-                started: false,
-                pending: None,
-            },
-        );
-        JobSchedule::Start(Box::new(job))
+        device.pending = Some(job);
+        JobSchedule::Pending
     }
 
-    pub(super) fn clear(&mut self, device_id: &str, order: JobOrder) {
-        if self.is_stale(device_id, order) {
+    fn clear(&mut self, order: JobOrder) {
+        if self.is_stale(order) {
             return;
         }
-        self.remember_order(device_id, order);
-        self.devices.remove(device_id);
-        self.entries.remove(device_id);
+        self.remember_order(order);
+        self.job = None;
+        self.entry = None;
     }
 
-    pub(super) fn start(&mut self, job: &ThumbnailJob) -> JobStart {
-        let Some(device) = self.devices.get_mut(&job.device_id) else {
+    fn start(&mut self, job: &ThumbnailJob) -> JobStart {
+        let Some(device) = &mut self.job else {
             return JobStart::Stale;
         };
-        if device.running != job.task || device.token != job.token {
-            return JobStart::Stale;
-        }
-        if device.started {
-            return JobStart::Stale;
-        }
-
-        if let Some(pending) = device.pending.take() {
-            device.running = pending.task.clone();
-            device.token = pending.token;
-            device.order = pending.order;
-            device.started = false;
-            JobStart::StartPending(Box::new(pending))
-        } else {
-            device.started = true;
-            JobStart::Fetch
-        }
+        device.start(job)
     }
 
-    pub(super) fn finish(
+    fn finish(
         &mut self,
         job: &ThumbnailJob,
         status: ThumbnailStatus,
         retry_after: Option<Instant>,
     ) -> JobCompletion {
-        let Some(device) = self.devices.get_mut(&job.device_id) else {
+        let Some(device) = &mut self.job else {
             return JobCompletion::Stale;
         };
-        if device.running != job.task || device.token != job.token {
-            return JobCompletion::Stale;
-        }
-
-        if let Some(pending) = device.pending.take() {
-            device.running = pending.task.clone();
-            device.token = pending.token;
-            device.order = pending.order;
-            device.started = false;
-            JobCompletion::StartPending(Box::new(pending))
-        } else {
-            self.devices.remove(&job.device_id);
-            if let Some(entry) = self.entries.get_mut(&job.device_id) {
-                if entry.task == job.task {
+        match device.finish(job) {
+            DeviceJobCompletion::Store => {
+                self.job = None;
+                if let Some(entry) = self.entry.as_mut().filter(|entry| entry.task == job.task) {
                     entry.status = status;
                     entry.retry_after = retry_after;
                 }
+                JobCompletion::Store
             }
-            JobCompletion::Store
+            DeviceJobCompletion::StartPending(job) => JobCompletion::StartPending(job),
+            DeviceJobCompletion::Stale => JobCompletion::Stale,
         }
     }
 
-    pub(super) fn send_failed(
+    fn send_failed(
         &mut self,
-        device_id: &str,
         task: TaskKey,
         order: JobOrder,
         message: String,
         retry_after: Instant,
     ) {
-        if self.is_stale(device_id, order) {
+        if self.is_stale(order) {
             return;
         }
-        self.remember_order(device_id, order);
-        self.devices.remove(device_id);
-        self.entries.insert(
-            device_id.to_owned(),
-            ThumbnailEntry {
-                task,
-                status: ThumbnailStatus::Missing(message),
-                retry_after: Some(retry_after),
-                order,
-            },
-        );
+        self.remember_order(order);
+        self.job = None;
+        self.entry = Some(ThumbnailEntry {
+            task,
+            status: ThumbnailStatus::Missing(message),
+            retry_after: Some(retry_after),
+            order,
+        });
     }
 
-    fn is_stale(&self, device_id: &str, order: JobOrder) -> bool {
-        self.latest_orders
-            .get(device_id)
-            .copied()
-            .is_some_and(|latest| order < latest)
+    fn entry_covers_task(&mut self, job: &ThumbnailJob) -> bool {
+        self.entry
+            .as_mut()
+            .is_some_and(|entry| entry.cover_or_refresh_order(&job.task, job.order))
     }
 
-    fn remember_order(&mut self, device_id: &str, order: JobOrder) {
-        self.latest_orders
-            .entry(device_id.to_owned())
-            .and_modify(|latest| *latest = (*latest).max(order))
-            .or_insert(order);
+    fn is_stale(&self, order: JobOrder) -> bool {
+        self.latest_order.is_some_and(|latest| order < latest)
+    }
+
+    fn remember_order(&mut self, order: JobOrder) {
+        self.latest_order = Some(self.latest_order.map_or(order, |latest| latest.max(order)));
+    }
+}
+
+enum DeviceJobCompletion {
+    Store,
+    StartPending(Box<ThumbnailJob>),
+    Stale,
+}
+
+impl DeviceJobState {
+    fn new(job: &ThumbnailJob) -> Self {
+        Self {
+            running: job.task.clone(),
+            token: job.token,
+            order: job.order,
+            started: false,
+            pending: None,
+        }
+    }
+
+    fn start(&mut self, job: &ThumbnailJob) -> JobStart {
+        if self.running != job.task || self.token != job.token {
+            return JobStart::Stale;
+        }
+        if self.started {
+            return JobStart::Stale;
+        }
+
+        if let Some(pending) = self.pending.take() {
+            self.replace_with(&pending);
+            JobStart::StartPending(Box::new(pending))
+        } else {
+            self.started = true;
+            JobStart::Fetch
+        }
+    }
+
+    fn finish(&mut self, job: &ThumbnailJob) -> DeviceJobCompletion {
+        if self.running != job.task || self.token != job.token {
+            return DeviceJobCompletion::Stale;
+        }
+
+        if let Some(pending) = self.pending.take() {
+            self.replace_with(&pending);
+            DeviceJobCompletion::StartPending(Box::new(pending))
+        } else {
+            DeviceJobCompletion::Store
+        }
+    }
+
+    fn replace_with(&mut self, job: &ThumbnailJob) {
+        self.running = job.task.clone();
+        self.token = job.token;
+        self.order = job.order;
+        self.started = false;
     }
 }
 
 impl ThumbnailEntry {
+    fn loading(task: TaskKey, order: JobOrder) -> Self {
+        Self {
+            task,
+            status: ThumbnailStatus::Loading("print thumbnail is loading".to_owned()),
+            retry_after: None,
+            order,
+        }
+    }
+
     fn cover_or_refresh_order(&mut self, task: &TaskKey, order: JobOrder) -> bool {
         if !self.covers(task, Instant::now()) {
             return false;
