@@ -10,7 +10,7 @@ use axum::{
 use bytes::Bytes;
 use tracing::warn;
 
-use super::AppState;
+use super::{device_not_found, known_device_id, AppState};
 
 const MJPEG_BOUNDARY: &str = "frame";
 
@@ -26,7 +26,15 @@ pub(super) async fn device_video_mjpeg(
 }
 
 async fn video_mjpeg_response(state: AppState, device_id: Option<String>) -> Response {
-    let subscription = match state.video.subscribe(device_id.as_deref()).await {
+    let selected_device_id = match device_id {
+        Some(device_id) => match known_device_id(&state, &device_id) {
+            Some(device_id) => Some(device_id.to_owned()),
+            None => return device_not_found(&device_id),
+        },
+        None => None,
+    };
+
+    let subscription = match state.video.subscribe(selected_device_id.as_deref()).await {
         Ok(subscription) => subscription,
         Err(error) => {
             return (

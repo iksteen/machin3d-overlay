@@ -15,7 +15,10 @@ impl<'a> BindCatalog<'a> {
         Self { cloud, devices }
     }
 
-    pub(super) async fn device(&mut self, device_id: &str) -> Result<Option<CloudDevice>> {
+    pub(super) async fn load_device_from_cloud(
+        &mut self,
+        device_id: &str,
+    ) -> Result<Option<CloudDevice>> {
         if self.devices.is_none() {
             self.devices = Some(bound_cloud_devices(self.cloud).await?);
         }

@@ -1,4 +1,4 @@
-use std::io::{Cursor, Read, Seek};
+use std::io::{Read, Seek};
 
 use anyhow::{ensure, Context, Result};
 use bytes::Bytes;
@@ -37,9 +37,11 @@ const FALLBACK_THUMBNAIL_NAMES: &[&str] = &[
     "Metadata/pick_1.png",
 ];
 
-pub(super) fn extract_bambu_3mf_thumbnail_archive(archive: Vec<u8>) -> Result<ThumbnailImage> {
+pub(super) fn extract_bambu_3mf_thumbnail_reader<R: Read + Seek>(
+    archive: R,
+) -> Result<ThumbnailImage> {
     let mut archive =
-        ZipArchive::new(Cursor::new(archive)).context("failed to read local 3MF as ZIP archive")?;
+        ZipArchive::new(archive).context("failed to read local 3MF as ZIP archive")?;
     let thumbnail = select_thumbnail_entry(&mut archive)?
         .context("3MF did not include a supported thumbnail image")?;
     read_thumbnail_entry(&mut archive, &thumbnail)
@@ -220,7 +222,7 @@ mod tests {
     use zip::{write::SimpleFileOptions, CompressionMethod, ZipWriter};
 
     use super::{
-        extract_bambu_3mf_thumbnail_archive, is_supported_thumbnail_entry, BAMBU_COVER_MIDDLE_REL,
+        extract_bambu_3mf_thumbnail_reader, is_supported_thumbnail_entry, BAMBU_COVER_MIDDLE_REL,
         OPC_THUMBNAIL_REL,
     };
 
@@ -234,7 +236,7 @@ mod tests {
             ("Metadata/plate_1.png", thumbnail),
         ]);
 
-        let image = extract_bambu_3mf_thumbnail_archive(archive).unwrap();
+        let image = extract_bambu_3mf_thumbnail_reader(Cursor::new(archive)).unwrap();
 
         assert_eq!(image.content_type, "image/png");
         assert_eq!(image.bytes.as_ref(), thumbnail);
@@ -258,7 +260,7 @@ mod tests {
             ("Metadata/plate_2.png", thumbnail),
         ]);
 
-        let image = extract_bambu_3mf_thumbnail_archive(archive).unwrap();
+        let image = extract_bambu_3mf_thumbnail_reader(Cursor::new(archive)).unwrap();
 
         assert_eq!(image.content_type, "image/png");
         assert_eq!(image.bytes.as_ref(), thumbnail);
@@ -272,7 +274,7 @@ mod tests {
             ("Metadata/plate_1.png", thumbnail),
         ]);
 
-        let image = extract_bambu_3mf_thumbnail_archive(archive).unwrap();
+        let image = extract_bambu_3mf_thumbnail_reader(Cursor::new(archive)).unwrap();
 
         assert_eq!(image.content_type, "image/png");
         assert_eq!(image.bytes.as_ref(), thumbnail.as_slice());
@@ -282,7 +284,7 @@ mod tests {
     fn archive_thumbnail_falls_back_to_sorted_supported_entries() {
         let archive = make_archive(&[("z/cover.png", b"wrong"), ("a/cover.png", b"right")]);
 
-        let image = extract_bambu_3mf_thumbnail_archive(archive).unwrap();
+        let image = extract_bambu_3mf_thumbnail_reader(Cursor::new(archive)).unwrap();
 
         assert_eq!(image.bytes.as_ref(), b"right");
     }

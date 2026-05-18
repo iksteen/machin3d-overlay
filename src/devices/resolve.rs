@@ -1,6 +1,7 @@
-use std::collections::HashSet;
+use std::{collections::HashSet, sync::Arc};
 
 use anyhow::{Context, Result};
+use tokio::{sync::Semaphore, task::JoinSet};
 use tracing::info;
 
 use crate::{
@@ -16,12 +17,15 @@ use super::{
     video::ExplicitVideoEndpoints,
 };
 
+const STARTUP_PROBE_CONCURRENCY: usize = 8;
+
 pub(crate) async fn resolve_devices(
     cloud: Option<&CloudSession>,
     cloud_configs: &[String],
     local_configs: &[LocalEndpointConfig],
     video_endpoints: &[VideoEndpoint],
 ) -> Result<DeviceRegistry> {
+    ensure_unique_cloud_configs(cloud_configs)?;
     let explicit_video = ExplicitVideoEndpoints::resolve(video_endpoints).await?;
     let enumerate_cloud_catalog =
         should_enumerate_cloud_catalog(cloud.is_some(), cloud_configs, local_configs);
@@ -49,6 +53,17 @@ pub(crate) async fn resolve_devices(
     Ok(registry)
 }
 
+fn ensure_unique_cloud_configs(cloud_configs: &[String]) -> Result<()> {
+    let mut seen = HashSet::new();
+    for device_id in cloud_configs {
+        let device_id = device_id.trim();
+        if !seen.insert(device_id.to_owned()) {
+            anyhow::bail!("--cloud-device specified duplicate device id `{device_id}`");
+        }
+    }
+    Ok(())
+}
+
 async fn resolve_local_devices(
     configs: &[LocalEndpointConfig],
     video_endpoints: &ExplicitVideoEndpoints,
@@ -56,13 +71,8 @@ async fn resolve_local_devices(
 ) -> Result<Vec<LocalDevice>> {
     let mut devices = Vec::with_capacity(configs.len());
     let mut seen = HashSet::new();
-    for config in configs {
-        let device_id = infer_local_device_id(config).await.with_context(|| {
-            format!(
-                "could not infer device ID for --local-device `{}`",
-                config.endpoint()
-            )
-        })?;
+    let device_ids = infer_local_device_ids(configs).await?;
+    for (config, device_id) in configs.iter().zip(device_ids) {
         if !seen.insert(device_id.clone()) {
             anyhow::bail!("--local-device resolves duplicate device id `{device_id}`");
         }
@@ -77,6 +87,36 @@ async fn resolve_local_devices(
         );
     }
     Ok(devices)
+}
+
+async fn infer_local_device_ids(configs: &[LocalEndpointConfig]) -> Result<Vec<String>> {
+    let semaphore = Arc::new(Semaphore::new(STARTUP_PROBE_CONCURRENCY));
+    let mut probes = JoinSet::new();
+    for (index, config) in configs.iter().cloned().enumerate() {
+        let semaphore = Arc::clone(&semaphore);
+        probes.spawn(async move {
+            let _permit = semaphore
+                .acquire_owned()
+                .await
+                .context("local device probe concurrency limiter closed")?;
+            let endpoint = config.endpoint();
+            let device_id = infer_local_device_id(&config).await.with_context(|| {
+                format!("could not infer device ID for --local-device `{endpoint}`")
+            })?;
+            Ok::<_, anyhow::Error>((index, device_id))
+        });
+    }
+
+    let mut device_ids = vec![None; configs.len()];
+    while let Some(result) = probes.join_next().await {
+        let (index, device_id) = result.context("local device probe task failed")??;
+        device_ids[index] = Some(device_id);
+    }
+
+    device_ids
+        .into_iter()
+        .map(|device_id| device_id.context("local device probe did not return a device ID"))
+        .collect()
 }
 
 async fn resolve_local_device_access(
@@ -126,7 +166,10 @@ fn finalize_local_device(device_id: String, endpoint: LocalEndpointConfig) -> Re
 
 #[cfg(test)]
 mod tests {
-    use super::{resolve_devices, resolve_local_device_access, should_enumerate_cloud_catalog};
+    use super::{
+        ensure_unique_cloud_configs, resolve_devices, resolve_local_device_access,
+        should_enumerate_cloud_catalog,
+    };
     use crate::{
         devices::{metadata::BindCatalog, video::ExplicitVideoEndpoints},
         local::LocalEndpointConfig,
@@ -196,6 +239,16 @@ mod tests {
             &[],
             &[local_arg("192.168.1.50,12345678")]
         ));
+    }
+
+    #[test]
+    fn duplicate_explicit_cloud_devices_are_rejected() {
+        let error =
+            ensure_unique_cloud_configs(&["printer-a".to_owned(), " printer-a ".to_owned()])
+                .unwrap_err();
+
+        assert!(error.to_string().contains("--cloud-device"));
+        assert!(error.to_string().contains("printer-a"));
     }
 
     #[tokio::test]

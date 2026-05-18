@@ -13,6 +13,7 @@ use crate::{
     local::LocalDevice,
     video::VideoEndpoint,
 };
+use tracing::warn;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum DeviceSource {
@@ -228,11 +229,15 @@ impl DeviceRegistry {
     }
 
     fn push(&mut self, entry: DeviceEntry) {
-        if self.entry_by_id.contains_key(entry.id()) {
+        let device_id = entry.id().to_owned();
+        if self.entry_by_id.contains_key(&device_id) {
+            warn!(
+                device_id = %device_id,
+                "ignoring duplicate device entry in resolved catalog"
+            );
             return;
         }
-        self.entry_by_id
-            .insert(entry.id().to_owned(), self.entries.len());
+        self.entry_by_id.insert(device_id, self.entries.len());
         self.entries.push(entry);
     }
 }

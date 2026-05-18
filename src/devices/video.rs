@@ -1,6 +1,7 @@
-use std::collections::HashMap;
+use std::{collections::HashMap, sync::Arc};
 
 use anyhow::{Context, Result};
+use tokio::{sync::Semaphore, task::JoinSet};
 use tracing::{debug, info};
 
 use crate::{
@@ -9,6 +10,8 @@ use crate::{
 };
 
 use super::{access::hydrate_device_entry, metadata::BindCatalog, registry::DeviceRegistry};
+
+const STARTUP_PROBE_CONCURRENCY: usize = 8;
 
 #[derive(Default)]
 pub(super) struct ExplicitVideoEndpoints {
@@ -22,15 +25,33 @@ pub(crate) struct ResolvedVideoEndpoints {
 
 impl ExplicitVideoEndpoints {
     pub(super) async fn resolve(endpoints: &[VideoEndpoint]) -> Result<Self> {
-        let mut resolved = Vec::with_capacity(endpoints.len());
-        for endpoint in endpoints {
-            let device_id = infer_video_device_id(endpoint).await.with_context(|| {
-                format!("could not infer device ID for --video-device `{endpoint}`")
-            })?;
-            resolved.push((device_id, endpoint.clone()));
+        let semaphore = Arc::new(Semaphore::new(STARTUP_PROBE_CONCURRENCY));
+        let mut probes = JoinSet::new();
+        for (index, endpoint) in endpoints.iter().cloned().enumerate() {
+            let semaphore = Arc::clone(&semaphore);
+            probes.spawn(async move {
+                let _permit = semaphore
+                    .acquire_owned()
+                    .await
+                    .context("video endpoint probe concurrency limiter closed")?;
+                let device_id = infer_video_device_id(&endpoint).await.with_context(|| {
+                    format!("could not infer device ID for --video-device `{endpoint}`")
+                })?;
+                Ok::<_, anyhow::Error>((index, device_id, endpoint))
+            });
+        }
+
+        let mut resolved = vec![None; endpoints.len()];
+        while let Some(result) = probes.join_next().await {
+            let (index, device_id, endpoint) =
+                result.context("video endpoint probe task failed")??;
+            resolved[index] = Some((device_id, endpoint));
         }
         Ok(Self {
-            endpoints: resolved,
+            endpoints: resolved
+                .into_iter()
+                .map(|endpoint| endpoint.context("video endpoint probe did not return a device ID"))
+                .collect::<Result<_>>()?,
         })
     }
 
@@ -66,6 +87,7 @@ pub(crate) async fn resolve_video_endpoints(
     let mut device_endpoints = HashMap::new();
     let mut candidates = Vec::new();
     let mut probes = tokio::task::JoinSet::new();
+    let semaphore = Arc::new(Semaphore::new(STARTUP_PROBE_CONCURRENCY));
 
     for entry in registry.entries() {
         let Some(endpoint) = entry.explicit_video() else {
@@ -89,8 +111,16 @@ pub(crate) async fn resolve_video_endpoints(
 
         candidates.push(endpoint.clone());
         let device_id = device.id.clone();
+        let semaphore = Arc::clone(&semaphore);
         probes.spawn(async move {
-            let result = probe_video_endpoint(&device_id, &endpoint).await;
+            let result = async {
+                let _permit = semaphore
+                    .acquire_owned()
+                    .await
+                    .context("video endpoint probe concurrency limiter closed")?;
+                probe_video_endpoint(&device_id, &endpoint).await
+            }
+            .await;
             (device_id, endpoint, result)
         });
     }

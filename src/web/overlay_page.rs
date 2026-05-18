@@ -9,7 +9,7 @@ use serde_json::json;
 
 use crate::assets;
 
-use super::AppState;
+use super::{default_device_id, device_not_found, known_device_id, AppState};
 
 pub(super) async fn horizontal_overlay(
     State(state): State<AppState>,
@@ -78,24 +78,6 @@ fn render_overlay(view_mode: &str, selected_device_id: Option<&str>) -> Result<S
         view_mode => view_mode,
         config_json => config_json,
     })?)
-}
-
-fn default_device_id(state: &AppState) -> Option<&str> {
-    state.devices.first().map(|entry| entry.id())
-}
-
-fn known_device_id<'a>(state: &'a AppState, device_id: &str) -> Option<&'a str> {
-    let device_id = device_id.trim();
-    state.devices.get(device_id).map(|entry| entry.id())
-}
-
-fn device_not_found(device_id: &str) -> Response {
-    (
-        StatusCode::NOT_FOUND,
-        [(header::CONTENT_TYPE, "text/plain; charset=utf-8")],
-        format!("device `{}` is not known", device_id.trim()),
-    )
-        .into_response()
 }
 
 fn asset_response(content_type: &'static str, body: &'static str) -> Response {

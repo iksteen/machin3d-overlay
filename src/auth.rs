@@ -1,5 +1,7 @@
 use std::{
-    env, fs,
+    env,
+    fs::{self, OpenOptions},
+    io::Write,
     path::{Path, PathBuf},
     sync::OnceLock,
 };
@@ -7,6 +9,10 @@ use std::{
 use anyhow::{bail, Context, Result};
 use chrono::{Duration, Utc};
 use serde::{Deserialize, Serialize};
+use uuid::Uuid;
+
+#[cfg(unix)]
+use std::os::unix::fs::OpenOptionsExt;
 
 use crate::bambu::LoginResponse;
 
@@ -68,15 +74,7 @@ pub fn save_token(
             .with_context(|| format!("could not create {}", parent.display()))?;
     }
     let encoded = serde_json::to_vec_pretty(&token_data)?;
-    fs::write(&path, [encoded, b"\n".to_vec()].concat())
-        .with_context(|| format!("could not write token file {}", path.display()))?;
-
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        fs::set_permissions(&path, fs::Permissions::from_mode(0o600))
-            .with_context(|| format!("could not chmod token file {}", path.display()))?;
-    }
+    write_token_file(&path, &encoded)?;
 
     Ok(path)
 }
@@ -123,4 +121,65 @@ fn resolve_default_token_path() -> PathBuf {
         .join("state")
         .join("bambu-overlay")
         .join("token.json")
+}
+
+fn write_token_file(path: &Path, encoded: &[u8]) -> Result<()> {
+    let temp_path = temporary_token_path(path);
+    let cleanup = TempFileCleanup::new(temp_path.clone());
+    let mut options = OpenOptions::new();
+    options.write(true).create_new(true);
+    #[cfg(unix)]
+    options.mode(0o600);
+
+    let mut file = options
+        .open(&temp_path)
+        .with_context(|| format!("could not create token file {}", temp_path.display()))?;
+    file.write_all(encoded)
+        .with_context(|| format!("could not write token file {}", temp_path.display()))?;
+    file.write_all(b"\n")
+        .with_context(|| format!("could not write token file {}", temp_path.display()))?;
+    file.sync_all()
+        .with_context(|| format!("could not sync token file {}", temp_path.display()))?;
+    drop(file);
+
+    fs::rename(&temp_path, path).with_context(|| {
+        format!(
+            "could not replace token file {} with {}",
+            path.display(),
+            temp_path.display()
+        )
+    })?;
+    cleanup.disarm();
+    Ok(())
+}
+
+fn temporary_token_path(path: &Path) -> PathBuf {
+    let file_name = path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or("token");
+    path.with_file_name(format!(".{file_name}.{}.tmp", Uuid::new_v4()))
+}
+
+struct TempFileCleanup {
+    path: PathBuf,
+    armed: bool,
+}
+
+impl TempFileCleanup {
+    fn new(path: PathBuf) -> Self {
+        Self { path, armed: true }
+    }
+
+    fn disarm(mut self) {
+        self.armed = false;
+    }
+}
+
+impl Drop for TempFileCleanup {
+    fn drop(&mut self) {
+        if self.armed {
+            let _ = fs::remove_file(&self.path);
+        }
+    }
 }

@@ -1,23 +1,31 @@
 use std::{
+    env,
+    fs::{self, File, OpenOptions},
+    io::{Read, Seek, SeekFrom, Write},
     net::{SocketAddr, TcpStream, ToSocketAddrs},
+    path::PathBuf,
     time::Duration,
 };
 
 use anyhow::{bail, ensure, Context, Result};
 use suppaftp::{types::FileType, Mode, NativeTlsConnector, NativeTlsFtpStream};
 use tracing::debug;
+use uuid::Uuid;
 
 use crate::{bambu::PrinterStatus, device_tls, local::LocalDevice};
 
 use super::{
-    archive::extract_bambu_3mf_thumbnail_archive,
-    error_chain, read_limited,
+    archive::extract_bambu_3mf_thumbnail_reader,
+    error_chain,
     readiness::{
         local_cloud_3mf_is_preparing, local_cloud_3mf_may_still_be_preparing,
         local_cloud_3mf_prepare_message,
     },
     ThumbnailImage, ThumbnailStatus, MAX_3MF_SIZE,
 };
+
+#[cfg(unix)]
+use std::os::unix::fs::OpenOptionsExt;
 
 const LOCAL_FTPS_PORT: u16 = 990;
 const FTP_TIMEOUT: Duration = Duration::from_secs(20);
@@ -186,13 +194,68 @@ fn retrieve_thumbnail(client: &mut NativeTlsFtpStream, path: &str) -> Result<Thu
     let mut stream = client
         .retr_as_stream(path)
         .with_context(|| format!("local FTPS RETR `{path}` failed"))?;
-    let archive = read_limited(&mut stream, MAX_3MF_SIZE, "local 3MF download")
+    let mut archive = download_3mf_to_temp_file(&mut stream, MAX_3MF_SIZE, "local 3MF download")
         .with_context(|| format!("failed to download local 3MF `{path}`"))?;
     client
         .finalize_retr_stream(stream)
         .with_context(|| format!("failed to finalize local FTPS RETR `{path}`"))?;
-    extract_bambu_3mf_thumbnail_archive(archive)
+    archive
+        .file
+        .seek(SeekFrom::Start(0))
+        .with_context(|| format!("failed to rewind local 3MF `{path}`"))?;
+    extract_bambu_3mf_thumbnail_reader(&mut archive.file)
         .with_context(|| format!("failed to read thumbnail from local 3MF `{path}`"))
+}
+
+fn download_3mf_to_temp_file(
+    reader: &mut dyn Read,
+    limit: usize,
+    label: &str,
+) -> Result<TempArchive> {
+    let path = temporary_archive_path();
+    let mut options = OpenOptions::new();
+    options.read(true).write(true).create_new(true);
+    #[cfg(unix)]
+    options.mode(0o600);
+
+    let mut file = options
+        .open(&path)
+        .with_context(|| format!("failed to create temporary local 3MF {}", path.display()))?;
+    let mut bytes = 0_usize;
+    let mut buffer = [0_u8; 16 * 1024];
+    loop {
+        let read = reader
+            .read(&mut buffer)
+            .with_context(|| format!("failed to read {label}"))?;
+        if read == 0 {
+            break;
+        }
+        ensure!(
+            bytes.saturating_add(read) <= limit,
+            "{label} exceeds maximum supported size of {limit} bytes"
+        );
+        file.write_all(&buffer[..read])
+            .with_context(|| format!("failed to write temporary local 3MF {}", path.display()))?;
+        bytes += read;
+    }
+    file.flush()
+        .with_context(|| format!("failed to flush temporary local 3MF {}", path.display()))?;
+    Ok(TempArchive { file, path })
+}
+
+fn temporary_archive_path() -> PathBuf {
+    env::temp_dir().join(format!("bambu-overlay-{}.3mf", Uuid::new_v4()))
+}
+
+struct TempArchive {
+    file: File,
+    path: PathBuf,
+}
+
+impl Drop for TempArchive {
+    fn drop(&mut self) {
+        let _ = fs::remove_file(&self.path);
+    }
 }
 
 fn local_ftps_address(device: &LocalDevice) -> String {

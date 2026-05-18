@@ -16,7 +16,7 @@ pub(super) async fn hydrate_local_config(
         }
     }
     if !has_access_code(endpoint.access_code.as_deref()) {
-        if let Some(metadata) = bind_catalog.device(device_id).await? {
+        if let Some(metadata) = bind_catalog.load_device_from_cloud(device_id).await? {
             endpoint.access_code = metadata.access_code;
             if !has_text(endpoint.name.as_deref()) {
                 endpoint.name = metadata.name;
@@ -38,7 +38,7 @@ pub(super) async fn hydrate_device_entry(
     }
     if !entry.has_access_code() {
         let device_id = entry.id().to_owned();
-        if let Some(metadata) = bind_catalog.device(&device_id).await? {
+        if let Some(metadata) = bind_catalog.load_device_from_cloud(&device_id).await? {
             entry.set_access_code(metadata.access_code);
             let device = entry.device_mut();
             if !has_text(device.name.as_deref()) {
