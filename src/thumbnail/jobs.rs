@@ -17,8 +17,8 @@ use super::{
 };
 
 pub(super) struct ThumbnailJobs {
-    sender: mpsc::UnboundedSender<ThumbnailJob>,
-    pub(super) receiver: Mutex<mpsc::UnboundedReceiver<ThumbnailJob>>,
+    queue_tx: mpsc::UnboundedSender<ThumbnailJob>,
+    queue_rx: Mutex<mpsc::UnboundedReceiver<ThumbnailJob>>,
     state: Mutex<ThumbnailJobState>,
     next_token: AtomicU64,
 }
@@ -27,8 +27,8 @@ impl ThumbnailJobs {
     pub(super) fn new() -> Self {
         let (sender, receiver) = mpsc::unbounded_channel();
         Self {
-            sender,
-            receiver: Mutex::new(receiver),
+            queue_tx: sender,
+            queue_rx: Mutex::new(receiver),
             state: Mutex::new(ThumbnailJobState::default()),
             next_token: AtomicU64::new(1),
         }
@@ -83,7 +83,7 @@ impl ThumbnailJobs {
         state.finish(job, status, retry_after)
     }
 
-    pub(super) async fn send_failed(
+    pub(super) async fn mark_enqueue_failed(
         &self,
         device_id: &str,
         task: TaskKey,
@@ -92,13 +92,17 @@ impl ThumbnailJobs {
         retry_after: Instant,
     ) {
         let mut state = self.state.lock().await;
-        state.send_failed(device_id, task, order, message, retry_after);
+        state.mark_enqueue_failed(device_id, task, order, message, retry_after);
     }
 
-    pub(super) fn send(&self, job: ThumbnailJob) -> Result<()> {
-        self.sender
+    pub(super) async fn next_job(&self) -> Option<ThumbnailJob> {
+        self.queue_rx.lock().await.recv().await
+    }
+
+    pub(super) fn enqueue(&self, job: ThumbnailJob) -> Result<()> {
+        self.queue_tx
             .send(job)
-            .map_err(|_| anyhow!("thumbnail worker queue is closed"))
+            .map_err(|_| anyhow!("thumbnail job queue is closed"))
     }
 
     fn next_token(&self) -> JobToken {

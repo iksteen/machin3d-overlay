@@ -106,7 +106,7 @@ impl ThumbnailJobState {
             .unwrap_or(JobCompletion::Stale)
     }
 
-    pub(super) fn send_failed(
+    pub(super) fn mark_enqueue_failed(
         &mut self,
         device_id: &str,
         task: TaskKey,
@@ -117,7 +117,7 @@ impl ThumbnailJobState {
         self.devices
             .entry(device_id.to_owned())
             .or_default()
-            .send_failed(task, order, message, retry_after);
+            .mark_enqueue_failed(task, order, message, retry_after);
     }
 }
 
@@ -229,7 +229,7 @@ impl DeviceThumbnailState {
         }
     }
 
-    fn send_failed(
+    fn mark_enqueue_failed(
         &mut self,
         task: TaskKey,
         order: JobOrder,

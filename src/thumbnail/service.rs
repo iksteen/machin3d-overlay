@@ -68,7 +68,6 @@ impl ThumbnailService {
 
     pub(crate) async fn watch_task_changes(&self, mut shutdown: ShutdownReceiver) {
         let mut changes = self.inner.mqtt.subscribe();
-        let mut job_rx = self.inner.jobs.receiver.lock().await;
         let mut jobs = JoinSet::new();
         let mut running_jobs = HashMap::new();
         self.refresh_changed_devices().await;
@@ -87,7 +86,11 @@ impl ThumbnailService {
                     }
                     self.refresh_changed_devices().await;
                 }
-                Some(job) = job_rx.recv() => {
+                received = self.inner.jobs.next_job() => {
+                    let Some(job) = received else {
+                        warn!("thumbnail job queue closed");
+                        return;
+                    };
                     let service = self.clone();
                     let tracked_job = job.clone();
                     let handle = jobs.spawn(async move {
@@ -158,26 +161,14 @@ impl ThumbnailService {
         let scheduled = self
             .inner
             .jobs
-            .schedule(device_id.to_owned(), task.clone(), report.clone(), order)
+            .schedule(device_id.to_owned(), task, report.clone(), order)
             .await;
         if matches!(scheduled, JobSchedule::Unchanged) {
             return Ok(());
         }
 
         if let JobSchedule::Start(job) = scheduled {
-            if let Err(error) = self.inner.jobs.send(*job) {
-                self.inner
-                    .jobs
-                    .send_failed(
-                        device_id,
-                        task,
-                        order,
-                        error.to_string(),
-                        Instant::now() + MISSING_RETRY_DELAY,
-                    )
-                    .await;
-                return Err(error);
-            }
+            self.enqueue_job(device_id, *job).await?;
         }
 
         Ok(())
@@ -188,7 +179,7 @@ impl ThumbnailService {
         match self.inner.jobs.start(&job).await {
             JobStart::Fetch => {}
             JobStart::StartPending(next_job) => {
-                self.send_pending_job(device_id, next_job).await;
+                self.enqueue_pending_job(device_id, next_job).await;
                 return;
             }
             JobStart::Stale => return,
@@ -234,32 +225,40 @@ impl ThumbnailService {
         match self.inner.jobs.finish(&job, status, retry_after).await {
             JobCompletion::Store => {}
             JobCompletion::StartPending(next_job) => {
-                self.send_pending_job(device_id, next_job).await;
+                self.enqueue_pending_job(device_id, next_job).await;
             }
             JobCompletion::Stale => {}
         }
     }
 
-    async fn send_pending_job(&self, device_id: &str, job: Box<ThumbnailJob>) {
-        let pending_task = job.task.clone();
-        let pending_order = job.order;
-        if let Err(error) = self.inner.jobs.send(*job) {
+    async fn enqueue_pending_job(&self, device_id: &str, job: Box<ThumbnailJob>) {
+        if let Err(error) = self.enqueue_job(device_id, *job).await {
+            warn!(
+                device_id,
+                error = %error_chain(&error),
+                "failed to enqueue pending print thumbnail refresh"
+            );
+        }
+    }
+
+    async fn enqueue_job(&self, device_id: &str, job: ThumbnailJob) -> Result<()> {
+        let task = job.task.clone();
+        let order = job.order;
+        if let Err(error) = self.inner.jobs.enqueue(job) {
             self.inner
                 .jobs
-                .send_failed(
+                .mark_enqueue_failed(
                     device_id,
-                    pending_task,
-                    pending_order,
+                    task,
+                    order,
                     error.to_string(),
                     Instant::now() + MISSING_RETRY_DELAY,
                 )
                 .await;
-            warn!(
-                device_id,
-                error = %error_chain(&error),
-                "failed to schedule pending print thumbnail refresh"
-            );
+            return Err(error);
         }
+
+        Ok(())
     }
 
     async fn handle_thumbnail_job_result(
@@ -296,7 +295,7 @@ impl ThumbnailService {
         {
             JobCompletion::Store | JobCompletion::Stale => {}
             JobCompletion::StartPending(next_job) => {
-                self.send_pending_job(&device_id, next_job).await;
+                self.enqueue_pending_job(&device_id, next_job).await;
             }
         }
     }
