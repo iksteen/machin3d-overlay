@@ -54,7 +54,6 @@ impl ThumbnailRuntime {
     pub(crate) async fn thumbnail(
         &self,
         requested_device_id: Option<&str>,
-        _requested_task: Option<&str>,
     ) -> Result<ThumbnailStatus> {
         let Some(device_id) = self.select_device_id(requested_device_id).await? else {
             return Ok(ThumbnailStatus::Missing("no device selected".to_owned()));

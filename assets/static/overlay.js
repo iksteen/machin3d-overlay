@@ -19,7 +19,9 @@
     spoolList: document.getElementById("spoolList"),
     thumbSlot: document.getElementById("thumbSlot"),
     thumbUrl: null,
+    thumbKey: null,
     thumbPendingUrl: null,
+    thumbPendingKey: null,
     thumbRetryTimer: null,
     thumbObjectUrl: null,
     thumbRequest: 0,
@@ -172,7 +174,7 @@
     return 2000;
   }
 
-  function renderThumb(url, force = false) {
+  function renderThumb(url, key = url, force = false) {
     if (!url) {
       if (!force && state.thumbUrl == null && state.thumbPendingUrl == null) {
         return;
@@ -180,27 +182,39 @@
       clearThumbRetry();
       ++state.thumbRequest;
       state.thumbUrl = null;
+      state.thumbKey = null;
       state.thumbPendingUrl = null;
+      state.thumbPendingKey = null;
       setThumbEmpty();
       return;
     }
 
-    if (!force && (url === state.thumbUrl || url === state.thumbPendingUrl)) {
+    const isRendered = url === state.thumbUrl && key === state.thumbKey;
+    const isPending = url === state.thumbPendingUrl && key === state.thumbPendingKey;
+    if (!force && (isRendered || isPending)) {
       return;
     }
 
     clearThumbRetry();
     const requestId = ++state.thumbRequest;
     state.thumbPendingUrl = url;
+    state.thumbPendingKey = key;
 
     setThumbLoading();
     fetch(url, { cache: "no-store" })
       .then((response) => {
-        if (requestId !== state.thumbRequest || state.thumbPendingUrl !== url) {
+        if (
+          requestId !== state.thumbRequest ||
+          state.thumbPendingUrl !== url ||
+          state.thumbPendingKey !== key
+        ) {
           return null;
         }
         if (response.status === 202) {
-          state.thumbRetryTimer = window.setTimeout(() => renderThumb(url, true), retryDelay(response));
+          state.thumbRetryTimer = window.setTimeout(
+            () => renderThumb(url, key, true),
+            retryDelay(response),
+          );
           return null;
         }
         if (!response.ok) {
@@ -209,30 +223,40 @@
         return response.blob();
       })
       .then((blob) => {
-        if (!blob || requestId !== state.thumbRequest || state.thumbPendingUrl !== url) {
+        if (
+          !blob ||
+          requestId !== state.thumbRequest ||
+          state.thumbPendingUrl !== url ||
+          state.thumbPendingKey !== key
+        ) {
           return;
         }
-        renderThumbBlob(url, blob, requestId);
+        renderThumbBlob(url, key, blob, requestId);
       })
       .catch(() => {
         if (requestId !== state.thumbRequest) {
           return;
         }
         state.thumbPendingUrl = null;
+        state.thumbPendingKey = null;
         if (!state.thumbUrl) {
           renderThumb(null);
         }
       });
   }
 
-  function renderThumbBlob(url, blob, requestId) {
+  function renderThumbBlob(url, key, blob, requestId) {
     const objectUrl = URL.createObjectURL(blob);
     const nextImage = new Image();
     nextImage.alt = "";
     nextImage.decoding = "async";
     nextImage.referrerPolicy = "no-referrer";
     nextImage.onload = () => {
-      if (requestId !== state.thumbRequest || state.thumbPendingUrl !== url) {
+      if (
+        requestId !== state.thumbRequest ||
+        state.thumbPendingUrl !== url ||
+        state.thumbPendingKey !== key
+      ) {
         URL.revokeObjectURL(objectUrl);
         return;
       }
@@ -249,8 +273,10 @@
       requestAnimationFrame(() => nextImage.classList.add("is-visible"));
       window.setTimeout(() => oldImages.forEach((image) => image.remove()), 220);
       state.thumbUrl = url;
+      state.thumbKey = key;
       state.thumbObjectUrl = objectUrl;
       state.thumbPendingUrl = null;
+      state.thumbPendingKey = null;
       state.thumbSlot.removeAttribute("aria-busy");
       state.thumbSlot.removeAttribute("aria-label");
       if (oldObjectUrl) {
@@ -263,6 +289,7 @@
         return;
       }
       state.thumbPendingUrl = null;
+      state.thumbPendingKey = null;
       if (!state.thumbUrl) {
         renderThumb(null);
       }
@@ -337,7 +364,7 @@
     );
 
     state.progress.style.width = progress == null ? "0%" : `${progress}%`;
-    renderThumb(device.thumbnail);
+    renderThumb(device.thumbnail, device.thumbnailTask || device.thumbnail);
   }
 
   function handlePrintEvent(event) {

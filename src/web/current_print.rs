@@ -80,6 +80,7 @@ struct OverlayDevice {
     ams_spools: Vec<OverlaySpool>,
     external_spool: Option<OverlaySpool>,
     thumbnail: Option<String>,
+    thumbnail_task: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -180,10 +181,8 @@ fn overlay_device(device: DeviceSummary) -> OverlayDevice {
         progress = estimated_progress(&device);
         progress_source = "estimated";
     }
-    let thumbnail = device
-        .thumbnail_task
-        .as_deref()
-        .map(|task| thumbnail_path(&device.id, task));
+    let thumbnail_task = device.thumbnail_task;
+    let thumbnail = thumbnail_task.as_ref().map(|_| thumbnail_path(&device.id));
 
     OverlayDevice {
         id: device.id,
@@ -218,6 +217,7 @@ fn overlay_device(device: DeviceSummary) -> OverlayDevice {
             .collect(),
         external_spool: device.external_spool.map(OverlaySpool::from),
         thumbnail,
+        thumbnail_task,
     }
 }
 
@@ -238,10 +238,9 @@ fn task_source_label(task_source: TaskSource) -> &'static str {
     }
 }
 
-fn thumbnail_path(device_id: &str, task: &str) -> String {
+fn thumbnail_path(device_id: &str) -> String {
     let query = form_urlencoded::Serializer::new(String::new())
         .append_pair("device", device_id)
-        .append_pair("task", task)
         .finish();
     format!("/api/thumbnail?{query}")
 }
@@ -366,8 +365,9 @@ mod tests {
         assert_eq!(device.plate, None);
         assert_eq!(
             device.thumbnail.as_deref(),
-            Some("/api/thumbnail?device=printer-a&task=Calibration+cube")
+            Some("/api/thumbnail?device=printer-a")
         );
+        assert_eq!(device.thumbnail_task.as_deref(), Some("Calibration cube"));
         assert_eq!(device.ams_spools.len(), 1);
         assert_eq!(device.ams_spools[0].material, "PLA");
         assert_eq!(device.ams_spools[0].color, "#FF0000");

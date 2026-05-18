@@ -83,7 +83,7 @@ class FakeElement {
   }
 }
 
-function loadOverlay() {
+function loadOverlay({ fetch = () => Promise.reject(new Error("unexpected fetch")) } = {}) {
   const elements = new Map();
   const document = {
     createElement: (tagName) => new FakeElement(tagName),
@@ -126,7 +126,7 @@ function loadOverlay() {
     },
     URLSearchParams,
     document,
-    fetch: () => Promise.reject(new Error("unexpected fetch")),
+    fetch,
     requestAnimationFrame: (callback) => callback(),
     setTimeout,
     window: {
@@ -159,6 +159,26 @@ test("renderThumb clears an existing thumbnail when the next status is missing",
   assert.equal(state.thumbSlot.textContent, "3D");
   assert.match(state.thumbSlot.className, /(^|\s)is-empty(\s|$)/);
   assert.deepEqual(revokedUrls, ["blob:old"]);
+});
+
+test("renderThumb refetches when the thumbnail task changes without a URL change", () => {
+  const fetches = [];
+  const { state, renderThumb } = loadOverlay({
+    fetch: (url, options) => {
+      fetches.push({ url, options });
+      return new Promise(() => {});
+    },
+  });
+  state.thumbUrl = "/api/thumbnail?device=printer-a";
+  state.thumbKey = "old-task";
+
+  renderThumb("/api/thumbnail?device=printer-a", "new-task");
+  renderThumb("/api/thumbnail?device=printer-a", "new-task");
+
+  assert.equal(fetches.length, 1);
+  assert.equal(fetches[0].url, "/api/thumbnail?device=printer-a");
+  assert.equal(fetches[0].options.cache, "no-store");
+  assert.equal(state.thumbPendingKey, "new-task");
 });
 
 test("renderConnectionBubble exposes printer connection freshness", () => {
