@@ -32,7 +32,7 @@ pub(super) async fn fetch_thumbnail(
         .client
         .download_bytes(cover, MAX_THUMBNAIL_SIZE)
         .await
-        .with_context(|| format!("failed to download Bambu Cloud thumbnail `{cover}`"))?;
+        .context("failed to download Bambu Cloud thumbnail")?;
 
     Ok(ThumbnailImage {
         content_type: image_content_type(

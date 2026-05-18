@@ -5,6 +5,7 @@ use bytes::{Bytes, BytesMut};
 use reqwest::{Client, Method};
 use serde::{de::DeserializeOwned, Serialize};
 use tracing::debug;
+use url::Url;
 
 use super::{
     error::{api_error_message, response_body_is_error, ApiStatus},
@@ -101,13 +102,14 @@ impl BambuClient {
         url: &str,
         max_bytes: usize,
     ) -> Result<DownloadedBytes> {
+        let target = download_target_label(url);
         let mut response = self
             .client
             .get(url)
             .timeout(self.timeout)
             .send()
             .await
-            .with_context(|| format!("request to `{url}` failed"))?;
+            .map_err(|error| anyhow!("request to {target} failed: {}", error.without_url()))?;
         let status = response.status();
         let content_type = response
             .headers()
@@ -115,18 +117,19 @@ impl BambuClient {
             .and_then(|value| value.to_str().ok())
             .map(str::to_owned);
         if !status.is_success() {
-            bail!("request to `{url}` returned HTTP {status}");
+            bail!("request to {target} returned HTTP {status}");
         }
         if let Some(content_length) = response.content_length() {
-            ensure_download_size(content_length, max_bytes, url)?;
+            ensure_download_size(content_length, max_bytes, &target)?;
         }
         let mut bytes = BytesMut::new();
-        while let Some(chunk) = response
-            .chunk()
-            .await
-            .with_context(|| format!("failed to read response body from `{url}`"))?
-        {
-            ensure_download_size((bytes.len() + chunk.len()) as u64, max_bytes, url)?;
+        while let Some(chunk) = response.chunk().await.map_err(|error| {
+            anyhow!(
+                "failed to read response body from {target}: {}",
+                error.without_url()
+            )
+        })? {
+            ensure_download_size((bytes.len() + chunk.len()) as u64, max_bytes, &target)?;
             bytes.extend_from_slice(&chunk);
         }
         Ok(DownloadedBytes {
@@ -185,11 +188,21 @@ impl BambuClient {
     }
 }
 
-fn ensure_download_size(size: u64, max_bytes: usize, url: &str) -> Result<()> {
+fn ensure_download_size(size: u64, max_bytes: usize, target: &str) -> Result<()> {
     if size > max_bytes as u64 {
-        bail!("download from `{url}` exceeds maximum supported size of {max_bytes} bytes");
+        bail!("download from {target} exceeds maximum supported size of {max_bytes} bytes");
     }
     Ok(())
+}
+
+fn download_target_label(url: &str) -> String {
+    Url::parse(url)
+        .ok()
+        .and_then(|url| {
+            url.host_str()
+                .map(|host| format!("{}://{host}/...", url.scheme()))
+        })
+        .unwrap_or_else(|| "external download URL".to_owned())
 }
 
 async fn send_and_parse<T>(
@@ -243,4 +256,17 @@ where
         return Err(anyhow!("{}", api_error_message(None, &api_status)));
     }
     serde_json::from_slice(body).context("response JSON did not match the expected shape")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::download_target_label;
+
+    #[test]
+    fn download_target_label_redacts_path_query_and_fragment() {
+        assert_eq!(
+            download_target_label("https://cdn.example.test/path/to/file.png?token=secret#frag"),
+            "https://cdn.example.test/..."
+        );
+    }
 }
