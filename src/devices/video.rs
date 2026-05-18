@@ -1,4 +1,7 @@
-use std::{collections::HashMap, sync::Arc};
+use std::{
+    collections::{HashMap, HashSet},
+    sync::Arc,
+};
 
 use anyhow::{Context, Result};
 use tokio::{sync::Semaphore, task::JoinSet};
@@ -47,12 +50,12 @@ impl ExplicitVideoEndpoints {
                 result.context("video endpoint probe task failed")??;
             resolved[index] = Some((device_id, endpoint));
         }
-        Ok(Self {
-            endpoints: resolved
-                .into_iter()
-                .map(|endpoint| endpoint.context("video endpoint probe did not return a device ID"))
-                .collect::<Result<_>>()?,
-        })
+        let endpoints = resolved
+            .into_iter()
+            .map(|endpoint| endpoint.context("video endpoint probe did not return a device ID"))
+            .collect::<Result<Vec<_>>>()?;
+        ensure_unique_video_devices(&endpoints)?;
+        Ok(Self { endpoints })
     }
 
     pub(super) fn for_device(&self, device_id: &str) -> Option<&VideoEndpoint> {
@@ -78,6 +81,18 @@ impl ExplicitVideoEndpoints {
         }
         Ok(())
     }
+}
+
+fn ensure_unique_video_devices(endpoints: &[(String, VideoEndpoint)]) -> Result<()> {
+    let mut seen = HashSet::new();
+    for (device_id, endpoint) in endpoints {
+        if !seen.insert(device_id.as_str()) {
+            anyhow::bail!(
+                "--video-device `{endpoint}` resolves to duplicate device id `{device_id}`"
+            );
+        }
+    }
+    Ok(())
 }
 
 pub(crate) async fn resolve_video_endpoints(
@@ -172,7 +187,7 @@ mod tests {
         video::VideoEndpoint,
     };
 
-    use super::local_video_endpoint;
+    use super::{ensure_unique_video_devices, local_video_endpoint};
 
     fn endpoint(value: &str) -> VideoEndpoint {
         value.parse().expect("video endpoint should parse")
@@ -190,6 +205,18 @@ mod tests {
         };
 
         assert_eq!(local_video_endpoint(&device), endpoint("192.168.1.50:6000"));
+    }
+
+    #[test]
+    fn duplicate_explicit_video_device_ids_are_rejected() {
+        let error = ensure_unique_video_devices(&[
+            explicit_video_endpoint("printer-a", "192.168.1.50"),
+            explicit_video_endpoint("printer-a", "192.168.1.51"),
+        ])
+        .unwrap_err();
+
+        assert!(error.to_string().contains("--video-device"));
+        assert!(error.to_string().contains("printer-a"));
     }
 
     #[tokio::test]
