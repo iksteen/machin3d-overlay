@@ -319,7 +319,7 @@ mod tests {
     fn device_payload_formats_web_payload_fields() {
         let payload = CurrentPrintPayload::success(
             MqttStatusPayload {
-                connected: true,
+                any_connected: true,
                 error: None,
                 updated_at: None,
             },
@@ -388,7 +388,7 @@ mod tests {
     fn success_payload_omits_error_field() {
         let payload = CurrentPrintPayload::success(
             MqttStatusPayload {
-                connected: true,
+                any_connected: true,
                 error: None,
                 updated_at: None,
             },

@@ -26,8 +26,6 @@ struct MqttState {
     revision: u64,
     devices: HashMap<String, DeviceLiveState>,
     connections: HashMap<String, MqttConnectionState>,
-    connected: bool,
-    error: Option<String>,
     updated_at: Option<String>,
 }
 
@@ -61,7 +59,9 @@ enum MqttTransportStatus {
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct MqttStatusPayload {
-    pub connected: bool,
+    /// `true` if *at least one* registered MQTT connection (cloud or local) is
+    /// currently established. Per-device status lives in `MqttSnapshot.connections`.
+    pub any_connected: bool,
     pub error: Option<String>,
     pub updated_at: Option<String>,
 }
@@ -216,7 +216,6 @@ impl MqttRuntime {
         let mut state = self.inner.write().await;
         mutation(&mut state);
         bump_revision(&mut state);
-        refresh_status(&mut state);
         drop(state);
         self.notify();
     }
@@ -359,19 +358,7 @@ fn remove_unregistered_reports(state: &mut MqttState, device_ids: Vec<String>) {
 }
 
 fn status_payload(state: &MqttState) -> MqttStatusPayload {
-    MqttStatusPayload {
-        connected: state.connected,
-        error: state.error.clone(),
-        updated_at: state.updated_at.clone(),
-    }
-}
-
-fn bump_revision(state: &mut MqttState) {
-    state.revision = state.revision.saturating_add(1);
-}
-
-fn refresh_status(state: &mut MqttState) {
-    state.connected = state
+    let any_connected = state
         .connections
         .values()
         .any(|connection| matches!(connection.status, MqttTransportStatus::Connected { .. }));
@@ -386,7 +373,15 @@ fn refresh_status(state: &mut MqttState) {
         })
         .collect::<Vec<_>>();
     errors.sort();
-    state.error = (!errors.is_empty()).then(|| errors.join("; "));
+    MqttStatusPayload {
+        any_connected,
+        error: (!errors.is_empty()).then(|| errors.join("; ")),
+        updated_at: state.updated_at.clone(),
+    }
+}
+
+fn bump_revision(state: &mut MqttState) {
+    state.revision = state.revision.saturating_add(1);
 }
 
 impl Default for MqttRuntime {
@@ -462,7 +457,7 @@ mod tests {
         let connection = snapshot.connections.get("printer-a").unwrap();
         assert!(!snapshot.devices.contains_key("printer-a"));
         assert_eq!(connection.status, MqttConnectionStatus::Disconnected);
-        assert!(!snapshot.status.connected);
+        assert!(!snapshot.status.any_connected);
 
         runtime.set_connection_connected("printer-a").await;
 
