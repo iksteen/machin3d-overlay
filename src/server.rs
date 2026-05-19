@@ -11,7 +11,7 @@ use crate::{
     mqtt::{supervise_target, MqttRuntime, MqttTarget},
     service::{wait_for_process_shutdown_signal, ServiceTasks, Shutdown},
     thumbnail::ThumbnailService,
-    video::{VideoEndpoint, VideoStreams},
+    video::{VideoEndpoint, VideoStreams, VideoWorkerEvents},
     web::{serve_http, AppState},
 };
 
@@ -83,6 +83,7 @@ struct ServiceGraph {
 struct BackgroundServices {
     mqtt: MqttRuntime,
     video: VideoStreams,
+    video_worker_events: VideoWorkerEvents,
     thumbnail: ThumbnailService,
     cloud_mqtt: Option<MqttTarget>,
     local_devices: Vec<LocalDevice>,
@@ -106,7 +107,8 @@ impl ServiceGraph {
         let cloud_mqtt = cloud_mqtt_startup(cloud.as_ref(), &config.cloud_mqtt, &cloud_mqtt_ids)?
             .map(|startup| startup.into_target());
         let video_endpoints = resolve_video_endpoints(&registry).await?;
-        let video = VideoStreams::new(registry.clone(), video_endpoints.endpoints_by_device)?;
+        let (video, video_worker_events) =
+            VideoStreams::new(registry.clone(), video_endpoints.endpoints_by_device)?;
         let thumbnail = ThumbnailService::new(mqtt.clone(), cloud.clone(), registry.clone());
         let local_devices = registry.local_devices();
         let state = AppState::new(
@@ -119,6 +121,7 @@ impl ServiceGraph {
         let background = BackgroundServices {
             mqtt,
             video,
+            video_worker_events,
             thumbnail,
             cloud_mqtt,
             local_devices,
@@ -138,11 +141,12 @@ impl ServiceGraph {
 impl BackgroundServices {
     fn spawn(self, tasks: &mut ServiceTasks, shutdown: &Shutdown) {
         let video = self.video;
+        let video_worker_events = self.video_worker_events;
         tasks.spawn_with_shutdown(
             shutdown,
             "video worker watcher",
             move |shutdown| async move {
-                video.watch_workers(shutdown).await;
+                video.watch_workers(video_worker_events, shutdown).await;
             },
         );
 

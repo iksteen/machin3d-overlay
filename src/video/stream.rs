@@ -35,6 +35,13 @@ pub struct VideoStreams {
     state: Arc<VideoState>,
 }
 
+/// Receives lifecycle events from spawned video stream workers. Held outside
+/// `VideoStreams` (which is cloneable and shared) so `watch_workers` owns the
+/// receiver by value; calling it more than once is now a type error.
+pub struct VideoWorkerEvents {
+    receiver: mpsc::Receiver<VideoWorkerTask>,
+}
+
 pub(super) struct VideoState {
     pub(super) registry: DeviceRegistry,
     pub(super) endpoints_by_device: HashMap<String, Vec<VideoEndpoint>>,
@@ -42,7 +49,6 @@ pub(super) struct VideoState {
     pub(super) device_streams: Mutex<HashMap<String, Arc<DeviceVideoStream>>>,
     pub(super) remembered_endpoints: Mutex<HashMap<String, VideoEndpoint>>,
     worker_tx: mpsc::Sender<VideoWorkerTask>,
-    worker_rx: Mutex<mpsc::Receiver<VideoWorkerTask>>,
 }
 
 pub(super) struct DeviceVideoStream {
@@ -66,10 +72,10 @@ impl VideoStreams {
     pub(crate) fn new(
         registry: DeviceRegistry,
         endpoints_by_device: HashMap<String, Vec<VideoEndpoint>>,
-    ) -> Result<Self> {
+    ) -> Result<(Self, VideoWorkerEvents)> {
         let tls = device_tls::tokio_connector()?;
         let (worker_tx, worker_rx) = mpsc::channel(WORKER_QUEUE_CAPACITY);
-        Ok(Self {
+        let streams = Self {
             state: Arc::new(VideoState {
                 registry,
                 endpoints_by_device,
@@ -77,9 +83,14 @@ impl VideoStreams {
                 device_streams: Mutex::new(HashMap::new()),
                 remembered_endpoints: Mutex::new(HashMap::new()),
                 worker_tx,
-                worker_rx: Mutex::new(worker_rx),
             }),
-        })
+        };
+        Ok((
+            streams,
+            VideoWorkerEvents {
+                receiver: worker_rx,
+            },
+        ))
     }
 
     pub async fn subscribe(&self, device_id: Option<&str>) -> Result<VideoSubscription> {
@@ -106,8 +117,12 @@ impl VideoStreams {
         self.state.endpoints_by_device.keys().cloned().collect()
     }
 
-    pub(crate) async fn watch_workers(&self, mut shutdown: ShutdownReceiver) {
-        let mut worker_rx = self.state.worker_rx.lock().await;
+    pub(crate) async fn watch_workers(
+        &self,
+        events: VideoWorkerEvents,
+        mut shutdown: ShutdownReceiver,
+    ) {
+        let mut worker_rx = events.receiver;
         let mut workers = JoinSet::new();
 
         loop {
@@ -271,7 +286,7 @@ mod tests {
             ],
             Vec::new(),
         );
-        let streams = VideoStreams::new(
+        let (streams, _events) = VideoStreams::new(
             registry,
             HashMap::from([("printer-b".to_owned(), vec![endpoint("192.168.1.50")])]),
         )
