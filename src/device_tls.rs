@@ -73,7 +73,7 @@ where
     certificate_device_id(&certificate)
 }
 
-pub(crate) fn certificate_device_id(certificate: &Certificate) -> Result<String> {
+fn certificate_device_id(certificate: &Certificate) -> Result<String> {
     let certificate = certificate
         .to_der()
         .context("failed to export Bambu device certificate")?;

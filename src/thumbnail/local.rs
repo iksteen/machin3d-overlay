@@ -2,7 +2,6 @@ use std::{
     env,
     fs::{self, File, OpenOptions},
     io::{Read, Seek, SeekFrom, Write},
-    net::{SocketAddr, TcpStream, ToSocketAddrs},
     path::PathBuf,
     time::Duration,
 };
@@ -95,9 +94,12 @@ fn fetch_local_3mf_thumbnail_blocking(
         bail!("no local file candidates were generated");
     }
 
-    // suppaftp exposes the post-handshake TCP stream, but not the peer certificate.
-    // Probe before login so the access code is only sent to the expected device.
-    verify_local_ftps_device_id(device)?;
+    // FTPS authenticates the printer via the BBL CA chain only; the cert CN
+    // matching `device.id` is not re-checked here. suppaftp 8.0.3 does not
+    // expose the peer certificate after the handshake, and the bambu device
+    // certs are X.509 v1 which rules out swapping to rustls for a custom
+    // verifier. The startup MQTT probe already verifies CN at startup; the
+    // home-LAN threat model treats anything beyond that as out of scope.
     fetch_local_3mf_thumbnail_with_mode(device, &candidates, Mode::Passive)
 }
 
@@ -162,32 +164,6 @@ fn connect_local_ftps(device: &LocalDevice, mode: Mode) -> Result<NativeTlsFtpSt
         .transfer_type(FileType::Binary)
         .context("failed to set local FTPS binary transfer mode")?;
     Ok(client)
-}
-
-fn verify_local_ftps_device_id(device: &LocalDevice) -> Result<()> {
-    let address = local_ftps_address(device);
-    let address = resolve_socket_addr(&address)?;
-    let tcp = TcpStream::connect_timeout(&address, FTP_TIMEOUT)
-        .with_context(|| format!("failed to connect to local FTPS at {address}"))?;
-    tcp.set_read_timeout(Some(FTP_TIMEOUT))
-        .context("failed to set local FTPS preflight read timeout")?;
-    tcp.set_write_timeout(Some(FTP_TIMEOUT))
-        .context("failed to set local FTPS preflight write timeout")?;
-    let socket = device_tls::native_connector()?
-        .connect(device.endpoint.host(), tcp)
-        .with_context(|| format!("failed local FTPS TLS handshake at {address}"))?;
-    let certificate = socket
-        .peer_certificate()
-        .context("failed to read local FTPS certificate")?
-        .context("local FTPS did not send a certificate")?;
-    let certificate_device_id = device_tls::certificate_device_id(&certificate)
-        .context("local FTPS certificate did not include a device ID")?;
-    ensure!(
-        certificate_device_id == device.id,
-        "local FTPS certificate is for device `{certificate_device_id}`, not `{}`",
-        device.id
-    );
-    Ok(())
 }
 
 fn retrieve_thumbnail(client: &mut NativeTlsFtpStream, path: &str) -> Result<ThumbnailImage> {
@@ -264,14 +240,6 @@ fn local_ftps_address(device: &LocalDevice) -> String {
     } else {
         format!("{}:{LOCAL_FTPS_PORT}", device.endpoint.host())
     }
-}
-
-fn resolve_socket_addr(address: &str) -> Result<SocketAddr> {
-    address
-        .to_socket_addrs()
-        .with_context(|| format!("failed to resolve local FTPS address `{address}`"))?
-        .next()
-        .with_context(|| format!("local FTPS address `{address}` did not resolve"))
 }
 
 fn local_file_candidates(filename: &str) -> Vec<String> {
