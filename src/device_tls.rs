@@ -3,6 +3,8 @@
 //! Video uses the BBL CA plus an explicit device-ID check. Local MQTT reuses
 //! the same native TLS connector through rumqttc.
 
+use std::sync::OnceLock;
+
 use anyhow::{Context, Result};
 use native_tls::{Certificate, TlsConnector as NativeTlsConnector};
 use tokio::io::{AsyncRead, AsyncWrite};
@@ -36,8 +38,16 @@ pub(crate) fn tokio_connector() -> Result<TlsConnector> {
 }
 
 pub(crate) fn native_connector() -> Result<NativeTlsConnector> {
+    static CONNECTOR: OnceLock<std::result::Result<NativeTlsConnector, String>> = OnceLock::new();
+    CONNECTOR
+        .get_or_init(build_native_connector)
+        .clone()
+        .map_err(|error| anyhow::anyhow!("{error}"))
+}
+
+fn build_native_connector() -> std::result::Result<NativeTlsConnector, String> {
     let ca = Certificate::from_pem(BBL_CA_CERT_PEM.as_bytes())
-        .context("failed to parse embedded BBL CA certificate")?;
+        .map_err(|error| format!("failed to parse embedded BBL CA certificate: {error}"))?;
     let mut builder = NativeTlsConnector::builder();
     builder.disable_built_in_roots(true);
     builder.use_sni(true);
@@ -48,7 +58,7 @@ pub(crate) fn native_connector() -> Result<NativeTlsConnector> {
     builder.danger_accept_invalid_hostnames(true);
     builder
         .build()
-        .context("failed to build Bambu device TLS connector")
+        .map_err(|error| format!("failed to build Bambu device TLS connector: {error}"))
 }
 
 pub(crate) fn peer_device_id<S>(socket: &TlsStream<S>) -> Result<String>
