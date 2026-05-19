@@ -4,7 +4,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-use anyhow::{ensure, Result};
+use anyhow::{ensure, Context, Result};
 use tokio::sync::Semaphore;
 use tokio::task::{Id, JoinError, JoinSet};
 use tracing::{debug, error, warn};
@@ -18,11 +18,33 @@ use crate::{
 };
 
 use super::{
-    cache::TaskKey,
-    error_chain,
+    cloud as cloud_source, error_chain,
+    job_state::TaskKey,
     jobs::{JobCompletion, JobOrder, JobStart, ThumbnailJob, ThumbnailJobs},
-    source, ThumbnailStatus,
+    local as local_source, ThumbnailStatus,
 };
+
+async fn fetch_thumbnail(
+    cloud: Option<&CloudSession>,
+    registry: &DeviceRegistry,
+    device_id: &str,
+    report: &PrinterStatus,
+) -> Result<ThumbnailStatus> {
+    let entry = registry
+        .get(device_id)
+        .with_context(|| format!("device `{device_id}` is not known"))?;
+
+    if let Some(local) = entry.local() {
+        return local_source::fetch_thumbnail(device_id, local, report).await;
+    }
+    if entry.has_cloud_mqtt() {
+        return cloud_source::fetch_thumbnail(cloud, device_id, report)
+            .await
+            .map(ThumbnailStatus::Ready);
+    }
+
+    anyhow::bail!("device `{device_id}` has no thumbnail data source")
+}
 
 const LOADING_RETRY_DELAY: Duration = Duration::from_secs(2);
 const MISSING_RETRY_DELAY: Duration = Duration::from_secs(30);
@@ -194,7 +216,7 @@ impl ThumbnailService {
             return;
         };
 
-        let (status, retry_after) = match source::fetch_thumbnail(
+        let (status, retry_after) = match fetch_thumbnail(
             self.inner.cloud.as_ref(),
             &self.inner.registry,
             device_id,

@@ -67,7 +67,7 @@ struct SpoolPayload {
 }
 
 impl CurrentPrintPayload {
-    pub(super) fn success(
+    pub(in crate::web) fn success(
         mqtt: MqttStatusPayload,
         devices: impl IntoIterator<Item = DeviceSummary>,
     ) -> CurrentPrintPayload {
@@ -80,7 +80,10 @@ impl CurrentPrintPayload {
         }
     }
 
-    pub(super) fn error(error: impl Into<String>, mqtt: MqttStatusPayload) -> CurrentPrintPayload {
+    pub(in crate::web) fn error(
+        error: impl Into<String>,
+        mqtt: MqttStatusPayload,
+    ) -> CurrentPrintPayload {
         CurrentPrintPayload {
             ok: false,
             error: Some(error.into()),

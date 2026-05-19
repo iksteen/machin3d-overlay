@@ -12,7 +12,7 @@ use crate::{
 
 use super::{
     access::{has_text, hydrate_local_config},
-    metadata::BindCatalog,
+    access::BindCatalog,
     registry::{DeviceRegistry, DeviceRegistryBuilder},
     video::ExplicitVideoEndpoints,
 };
@@ -170,7 +170,7 @@ mod tests {
         should_enumerate_cloud_catalog,
     };
     use crate::{
-        devices::{metadata::BindCatalog, video::ExplicitVideoEndpoints},
+        devices::{access::BindCatalog, video::ExplicitVideoEndpoints},
         local::LocalEndpointConfig,
     };
 

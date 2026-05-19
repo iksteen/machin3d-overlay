@@ -13,36 +13,11 @@ use axum::{
 };
 use serde_json::json;
 
-use crate::{device_summary::summarize_devices, devices::DeviceRegistry, mqtt::MqttRuntime};
-
 mod payload;
 
 pub(super) use payload::CurrentPrintPayload;
 
 use super::AppState;
-
-#[derive(Clone)]
-pub(super) struct CurrentPrintService {
-    registry: DeviceRegistry,
-    mqtt: MqttRuntime,
-}
-
-impl CurrentPrintService {
-    pub(super) fn new(registry: DeviceRegistry, mqtt: MqttRuntime) -> Self {
-        Self { registry, mqtt }
-    }
-
-    pub(super) async fn payload(&self) -> Result<CurrentPrintPayload> {
-        let snapshot = self.mqtt.snapshot().await;
-        let devices = summarize_devices(
-            self.registry.devices(),
-            &snapshot.devices,
-            &snapshot.connections,
-        );
-
-        Ok(CurrentPrintPayload::success(snapshot.status, devices))
-    }
-}
 
 pub(super) async fn current_print(State(state): State<AppState>) -> Response {
     match state.current_print_payload().await {

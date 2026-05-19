@@ -14,8 +14,7 @@ use crate::bambu::PrinterStatus;
 
 pub(super) use super::job_state::{JobCompletion, JobOrder, JobStart, ThumbnailJob};
 use super::{
-    cache::TaskKey,
-    job_state::{JobId, ThumbnailJobState},
+    job_state::{JobId, TaskKey, ThumbnailJobState},
     ThumbnailStatus,
 };
 

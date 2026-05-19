@@ -1,12 +1,9 @@
 mod archive;
-mod cache;
 mod cloud;
 mod job_state;
 mod jobs;
 mod local;
-mod readiness;
 mod service;
-mod source;
 
 use std::io::Read;
 

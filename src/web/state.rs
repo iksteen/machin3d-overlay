@@ -14,6 +14,7 @@ use anyhow::Result;
 use tokio::sync::broadcast;
 
 use crate::{
+    device_summary::summarize_devices,
     devices::DeviceRegistry,
     mqtt::{MqttRuntime, MqttStatusPayload},
     service::{Shutdown, ShutdownReceiver},
@@ -21,11 +22,10 @@ use crate::{
     video::{VideoStreams, VideoSubscription},
 };
 
-use super::current_print::{CurrentPrintPayload, CurrentPrintService};
+use super::current_print::CurrentPrintPayload;
 
 #[derive(Clone)]
 pub(crate) struct AppState {
-    current_print: CurrentPrintService,
     mqtt: MqttRuntime,
     video: VideoStreams,
     thumbnail: ThumbnailService,
@@ -41,9 +41,7 @@ impl AppState {
         thumbnail: ThumbnailService,
         shutdown: Shutdown,
     ) -> Self {
-        let current_print = CurrentPrintService::new(registry.clone(), mqtt.clone());
         Self {
-            current_print,
             mqtt,
             video,
             thumbnail,
@@ -53,7 +51,10 @@ impl AppState {
     }
 
     pub(super) async fn current_print_payload(&self) -> Result<CurrentPrintPayload> {
-        self.current_print.payload().await
+        let snapshot = self.mqtt.snapshot().await;
+        let devices =
+            summarize_devices(self.devices.devices(), &snapshot.devices, &snapshot.connections);
+        Ok(CurrentPrintPayload::success(snapshot.status, devices))
     }
 
     pub(super) async fn mqtt_status(&self) -> MqttStatusPayload {

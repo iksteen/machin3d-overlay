@@ -13,8 +13,7 @@ use crate::{
 };
 
 use super::{
-    access::hydrate_device_entry,
-    metadata::BindCatalog,
+    access::{hydrate_device_entry, BindCatalog},
     registry::{DeviceRegistry, DeviceRegistryBuilder},
 };
 
@@ -195,9 +194,7 @@ fn local_video_endpoint(device: &LocalDevice) -> VideoEndpoint {
 mod tests {
     use crate::{
         bambu::CloudDevice,
-        devices::{
-            metadata::BindCatalog, video::ExplicitVideoEndpoints, DeviceRegistryBuilder,
-        },
+        devices::{access::BindCatalog, video::ExplicitVideoEndpoints, DeviceRegistryBuilder},
         local::{LocalDevice, LocalEndpoint},
         video::VideoEndpoint,
     };

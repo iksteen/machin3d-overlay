@@ -1,8 +1,47 @@
 use anyhow::Result;
 
-use crate::{local::LocalEndpointConfig, secret::Secret, video::VideoEndpoint};
+use crate::{
+    bambu::CloudDevice,
+    cloud::{bound_cloud_devices, CloudSession},
+    local::LocalEndpointConfig,
+    secret::Secret,
+    video::VideoEndpoint,
+};
 
-use super::{metadata::BindCatalog, registry::DeviceEntry};
+use super::registry::DeviceEntry;
+
+/// Lazy access to the Bambu Cloud `/bind` device catalog, used to fill in
+/// missing access codes during local-device or explicit-video resolution. The
+/// cloud call is made at most once; either the caller seeded the device list
+/// up front (cloud enumeration mode) or the first hydration request triggers
+/// the fetch.
+pub(super) struct BindCatalog<'a> {
+    cloud: Option<&'a CloudSession>,
+    devices: Option<Vec<CloudDevice>>,
+}
+
+impl<'a> BindCatalog<'a> {
+    pub(super) fn new(cloud: Option<&'a CloudSession>, devices: Option<Vec<CloudDevice>>) -> Self {
+        Self { cloud, devices }
+    }
+
+    pub(super) async fn load_device_from_cloud(
+        &mut self,
+        device_id: &str,
+    ) -> Result<Option<CloudDevice>> {
+        if self.devices.is_none() {
+            self.devices = Some(bound_cloud_devices(self.cloud).await?);
+        }
+
+        Ok(self
+            .devices
+            .as_deref()
+            .unwrap_or(&[])
+            .iter()
+            .find(|device| device.id.as_deref().map(str::trim) == Some(device_id))
+            .cloned())
+    }
+}
 
 pub(super) async fn hydrate_local_config(
     device_id: &str,
@@ -60,8 +99,8 @@ fn has_access_code(access_code: Option<&Secret<String>>) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::hydrate_local_config;
-    use crate::{devices::metadata::BindCatalog, local::LocalEndpointConfig, video::VideoEndpoint};
+    use super::{hydrate_local_config, BindCatalog};
+    use crate::{local::LocalEndpointConfig, video::VideoEndpoint};
 
     fn local_config(value: &str) -> LocalEndpointConfig {
         value.parse().expect("local config should parse")

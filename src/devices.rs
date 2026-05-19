@@ -1,5 +1,4 @@
 mod access;
-mod metadata;
 mod registry;
 mod resolve;
 mod video;

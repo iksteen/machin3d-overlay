@@ -1,8 +1,48 @@
 use std::{collections::HashMap, time::Instant};
 
-use crate::bambu::PrinterStatus;
+use crate::{bambu::PrinterStatus, mqtt::MqttDeviceState};
 
-use super::{cache::TaskKey, ThumbnailStatus};
+use super::{trimmed, ThumbnailStatus};
+
+/// Identifies the active print task on a device. Two thumbnail jobs with the
+/// same `TaskKey` are about the same print job; jobs with different keys are
+/// for distinct prints. The key combines task id, filename, task name, start
+/// time, and print type so that any change to the active print invalidates
+/// cached state and schedules a fresh thumbnail fetch.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) struct TaskKey(String);
+
+impl TaskKey {
+    pub(super) fn from_state(state: &MqttDeviceState) -> Option<Self> {
+        state
+            .is_active_task()
+            .then(|| Self::from_report(&state.report))
+            .flatten()
+    }
+
+    #[cfg(test)]
+    pub(super) fn for_test(value: &str) -> Self {
+        Self(value.to_owned())
+    }
+
+    fn from_report(report: &PrinterStatus) -> Option<Self> {
+        let task_id = trimmed(report.task_id.as_deref());
+        let filename = trimmed(report.filename.as_deref());
+        let task_name = trimmed(report.task_name.as_deref());
+        if task_id.is_none() && filename.is_none() && task_name.is_none() {
+            return None;
+        }
+
+        Some(Self(format!(
+            "{}\u{0}{}\u{0}{}\u{0}{}\u{0}{}",
+            task_id.unwrap_or_default(),
+            filename.unwrap_or_default(),
+            task_name.unwrap_or_default(),
+            trimmed(report.start_time.as_deref()).unwrap_or_default(),
+            trimmed(report.print_type.as_deref()).unwrap_or_default()
+        )))
+    }
+}
 
 #[derive(Clone, Debug)]
 pub(super) struct ThumbnailJob {
@@ -399,10 +439,58 @@ impl JobId {
 mod tests {
     use bytes::Bytes;
 
-    use super::{JobCompletion, JobId, JobOrder, JobStart, ThumbnailJob, ThumbnailJobState};
+    use super::{JobCompletion, JobId, JobOrder, JobStart, TaskKey, ThumbnailJob, ThumbnailJobState};
     use crate::bambu::PrinterStatus;
-    use crate::thumbnail::cache::TaskKey;
+    use crate::mqtt::{MqttConnectionStatus, MqttDeviceConnection, MqttDeviceState};
     use crate::thumbnail::{ThumbnailImage, ThumbnailStatus};
+
+    #[test]
+    fn task_key_tracks_the_active_print_identity() {
+        let report = PrinterStatus {
+            task_id: Some("task-1".to_owned()),
+            filename: Some("cube.3mf".to_owned()),
+            task_name: Some("Cube".to_owned()),
+            start_time: Some("2026-01-01".to_owned()),
+            ..PrinterStatus::default()
+        };
+
+        assert!(TaskKey::from_report(&report).is_some());
+        assert_eq!(TaskKey::from_report(&PrinterStatus::default()), None);
+    }
+
+    #[test]
+    fn task_key_ignores_inactive_live_state() {
+        let state = MqttDeviceState::from_report(PrinterStatus {
+            status: Some("FINISH".to_owned()),
+            task_id: Some("task-1".to_owned()),
+            filename: Some("cube.3mf".to_owned()),
+            task_name: Some("Cube".to_owned()),
+            ..PrinterStatus::default()
+        });
+
+        assert_eq!(TaskKey::from_state(&state), None);
+    }
+
+    #[test]
+    fn task_key_ignores_stale_live_state() {
+        let state = MqttDeviceState::from_snapshot(
+            PrinterStatus {
+                status: Some("RUNNING".to_owned()),
+                task_id: Some("task-1".to_owned()),
+                filename: Some("cube.3mf".to_owned()),
+                task_name: Some("Cube".to_owned()),
+                ..PrinterStatus::default()
+            },
+            None,
+            MqttDeviceConnection {
+                key: Some("printer-a".to_owned()),
+                status: MqttConnectionStatus::Disconnected,
+                error: Some("disconnected".to_owned()),
+            },
+        );
+
+        assert_eq!(TaskKey::from_state(&state), None);
+    }
 
     struct TestJobs {
         state: ThumbnailJobState,
