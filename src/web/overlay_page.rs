@@ -9,12 +9,12 @@ use serde_json::json;
 
 use crate::assets;
 
-use super::{default_device_id, device_not_found, known_device_id, AppState};
+use super::{device_not_found, AppState};
 
 pub(super) async fn horizontal_overlay(
     State(state): State<AppState>,
 ) -> Result<Html<String>, Response> {
-    render_overlay("horizontal", default_device_id(&state))
+    render_overlay("horizontal", state.default_device_id())
         .map(Html)
         .map_err(render_error)
 }
@@ -23,7 +23,7 @@ pub(super) async fn horizontal_device_overlay(
     State(state): State<AppState>,
     Path(device_id): Path<String>,
 ) -> Result<Html<String>, Response> {
-    let Some(device_id) = known_device_id(&state, &device_id) else {
+    let Some(device_id) = state.known_device_id(&device_id) else {
         return Err(device_not_found(&device_id));
     };
     render_overlay("horizontal", Some(device_id))
@@ -34,7 +34,7 @@ pub(super) async fn horizontal_device_overlay(
 pub(super) async fn vertical_overlay(
     State(state): State<AppState>,
 ) -> Result<Html<String>, Response> {
-    render_overlay("vertical", default_device_id(&state))
+    render_overlay("vertical", state.default_device_id())
         .map(Html)
         .map_err(render_error)
 }
@@ -43,7 +43,7 @@ pub(super) async fn vertical_device_overlay(
     State(state): State<AppState>,
     Path(device_id): Path<String>,
 ) -> Result<Html<String>, Response> {
-    let Some(device_id) = known_device_id(&state, &device_id) else {
+    let Some(device_id) = state.known_device_id(&device_id) else {
         return Err(device_not_found(&device_id));
     };
     render_overlay("vertical", Some(device_id))

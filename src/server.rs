@@ -12,7 +12,7 @@ use crate::{
     service::{wait_for_process_shutdown_signal, ServiceTasks, Shutdown},
     thumbnail::ThumbnailService,
     video::{VideoEndpoint, VideoStreams},
-    web::{app_state, serve_http, AppState},
+    web::{serve_http, AppState},
 };
 
 pub(crate) const DEFAULT_HOST: &str = "127.0.0.1";
@@ -109,7 +109,7 @@ impl ServiceGraph {
         let video = VideoStreams::new(registry.clone(), video_endpoints.endpoints_by_device)?;
         let thumbnail = ThumbnailService::new(mqtt.clone(), cloud.clone(), registry.clone());
         let local_devices = registry.local_devices();
-        let state = app_state(
+        let state = AppState::new(
             mqtt.clone(),
             registry,
             video.clone(),

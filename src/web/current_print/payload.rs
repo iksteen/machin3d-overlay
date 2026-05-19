@@ -15,7 +15,7 @@ use super::super::paths;
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
-pub(super) struct CurrentPrintPayload {
+pub(in crate::web) struct CurrentPrintPayload {
     ok: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     error: Option<String>,

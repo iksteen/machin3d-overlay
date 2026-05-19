@@ -6,7 +6,7 @@ use axum::{
 
 use crate::thumbnail::ThumbnailStatus;
 
-use super::{device_not_found, known_device_id, AppState};
+use super::{device_not_found, AppState};
 
 pub(super) async fn thumbnail(State(state): State<AppState>) -> Response {
     thumbnail_response(state, None).await
@@ -21,7 +21,7 @@ pub(super) async fn device_thumbnail(
 
 async fn thumbnail_response(state: AppState, device_id: Option<String>) -> Response {
     let selected_device_id = match device_id {
-        Some(device_id) => match known_device_id(&state, &device_id) {
+        Some(device_id) => match state.known_device_id(&device_id) {
             Some(device_id) => Some(device_id.to_owned()),
             None => return device_not_found(&device_id),
         },
@@ -29,8 +29,7 @@ async fn thumbnail_response(state: AppState, device_id: Option<String>) -> Respo
     };
 
     match state
-        .thumbnail
-        .thumbnail(selected_device_id.as_deref())
+        .thumbnail_status(selected_device_id.as_deref())
         .await
     {
         Ok(ThumbnailStatus::Ready(image)) => {

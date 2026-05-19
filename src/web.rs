@@ -4,6 +4,7 @@ mod current_print;
 mod devices;
 mod overlay_page;
 mod paths;
+mod state;
 mod thumbnail;
 mod video;
 
@@ -17,22 +18,9 @@ use axum::{
 use tokio::net::TcpListener;
 use tracing::info;
 
-use crate::{
-    devices::DeviceRegistry, local::Endpoint, mqtt::MqttRuntime, service::Shutdown,
-    thumbnail::ThumbnailService, video::VideoStreams,
-};
+use crate::{local::Endpoint, service::Shutdown};
 
-use self::current_print::CurrentPrintService;
-
-#[derive(Clone)]
-pub(crate) struct AppState {
-    current_print: CurrentPrintService,
-    mqtt: MqttRuntime,
-    video: VideoStreams,
-    thumbnail: ThumbnailService,
-    devices: DeviceRegistry,
-    shutdown: Shutdown,
-}
+pub(crate) use state::AppState;
 
 pub(crate) async fn serve_http(bind: Endpoint, state: AppState, shutdown: Shutdown) -> Result<()> {
     let app = router(state);
@@ -87,35 +75,6 @@ fn router(state: AppState) -> Router {
         .with_state(state)
 }
 
-pub(crate) fn app_state(
-    mqtt: MqttRuntime,
-    registry: DeviceRegistry,
-    video: VideoStreams,
-    thumbnail: ThumbnailService,
-    shutdown: Shutdown,
-) -> AppState {
-    let devices = registry.clone();
-    let current_print = CurrentPrintService::new(registry.clone(), mqtt.clone());
-
-    AppState {
-        current_print,
-        mqtt,
-        video,
-        thumbnail,
-        devices,
-        shutdown,
-    }
-}
-
-fn known_device_id<'a>(state: &'a AppState, device_id: &str) -> Option<&'a str> {
-    let device_id = device_id.trim();
-    state.devices.get(device_id).map(|entry| entry.id())
-}
-
-fn default_device_id(state: &AppState) -> Option<&str> {
-    state.devices.first().map(|entry| entry.id())
-}
-
 fn device_not_found(device_id: &str) -> Response {
     (
         StatusCode::NOT_FOUND,
@@ -140,7 +99,7 @@ mod tests {
         service::Shutdown, thumbnail::ThumbnailService, video::VideoStreams,
     };
 
-    use super::{app_state, router};
+    use super::{router, AppState};
 
     #[tokio::test]
     async fn device_layout_route_decodes_device_path_segment() {
@@ -179,7 +138,7 @@ mod tests {
             .unwrap()
     }
 
-    fn test_state() -> super::AppState {
+    fn test_state() -> AppState {
         let mqtt = MqttRuntime::new();
         let registry = DeviceRegistry::new(
             vec![CloudDevice {
@@ -191,6 +150,6 @@ mod tests {
         );
         let video = VideoStreams::new(registry.clone(), HashMap::new()).unwrap();
         let thumbnail = ThumbnailService::new(mqtt.clone(), None, registry.clone());
-        app_state(mqtt, registry, video, thumbnail, Shutdown::new())
+        AppState::new(mqtt, registry, video, thumbnail, Shutdown::new())
     }
 }

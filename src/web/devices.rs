@@ -34,8 +34,8 @@ struct KnownDevicePaths {
 }
 
 pub(super) async fn known_devices(State(state): State<AppState>) -> Json<KnownDevicesPayload> {
-    let runtime_video_ids = state.video.known_device_ids().await;
-    Json(known_devices_payload(&state.devices, &runtime_video_ids))
+    let runtime_video_ids = state.known_video_device_ids().await;
+    Json(known_devices_payload(state.devices(), &runtime_video_ids))
 }
 
 fn known_devices_payload(
