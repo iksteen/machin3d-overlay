@@ -15,7 +15,7 @@ use crate::bambu::PrinterStatus;
 pub(super) use super::job_state::{JobCompletion, JobOrder, JobStart, ThumbnailJob};
 use super::{
     cache::TaskKey,
-    job_state::{JobToken, ThumbnailJobState},
+    job_state::{JobId, ThumbnailJobState},
     ThumbnailStatus,
 };
 
@@ -25,7 +25,7 @@ pub(super) struct ThumbnailJobs {
     queue_tx: mpsc::Sender<ThumbnailJob>,
     queue_rx: Mutex<mpsc::Receiver<ThumbnailJob>>,
     state: Mutex<ThumbnailJobState>,
-    next_token: AtomicU64,
+    next_id: AtomicU64,
 }
 
 impl ThumbnailJobs {
@@ -35,7 +35,7 @@ impl ThumbnailJobs {
             queue_tx: sender,
             queue_rx: Mutex::new(receiver),
             state: Mutex::new(ThumbnailJobState::default()),
-            next_token: AtomicU64::new(1),
+            next_id: AtomicU64::new(1),
         }
     }
 
@@ -66,7 +66,7 @@ impl ThumbnailJobs {
         report: PrinterStatus,
         order: JobOrder,
     ) -> Option<ThumbnailJob> {
-        let job = ThumbnailJob::new(device_id, task, report, order, self.next_token());
+        let job = ThumbnailJob::new(device_id, task, report, order, self.next_id());
         let mut state = self.state.lock().await;
         state.schedule(job)
     }
@@ -114,7 +114,7 @@ impl ThumbnailJobs {
         })
     }
 
-    fn next_token(&self) -> JobToken {
-        JobToken::new(self.next_token.fetch_add(1, Ordering::Relaxed))
+    fn next_id(&self) -> JobId {
+        JobId::new(self.next_id.fetch_add(1, Ordering::Relaxed))
     }
 }

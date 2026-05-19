@@ -10,7 +10,7 @@ pub(super) struct ThumbnailJob {
     pub(super) task: TaskKey,
     pub(super) report: PrinterStatus,
     pub(super) order: JobOrder,
-    token: JobToken,
+    id: JobId,
 }
 
 pub(super) enum JobStart {
@@ -28,8 +28,12 @@ pub(super) enum JobCompletion {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub(super) struct JobOrder(u64);
 
+/// Identifies a specific `ThumbnailJob` instance through the schedule → start
+/// → finish pipeline, so a worker can confirm the active job still matches the
+/// one it dequeued. Distinct from `JobOrder`: a `JobId` is a monotonic
+/// per-instance handle and has no relationship to MQTT snapshot revisions.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(super) struct JobToken(u64);
+pub(super) struct JobId(u64);
 
 #[derive(Default)]
 pub(super) struct ThumbnailJobState {
@@ -57,7 +61,7 @@ struct DeviceThumbnailState {
 
 struct ActiveThumbnailJob {
     task: TaskKey,
-    token: JobToken,
+    id: JobId,
     order: JobOrder,
     started: bool,
     pending_job: Option<ThumbnailJob>,
@@ -281,7 +285,7 @@ impl ActiveThumbnailJob {
     fn new(job: &ThumbnailJob) -> Self {
         Self {
             task: job.task.clone(),
-            token: job.token,
+            id: job.id,
             order: job.order,
             started: false,
             pending_job: None,
@@ -289,7 +293,7 @@ impl ActiveThumbnailJob {
     }
 
     fn start(&mut self, job: &ThumbnailJob) -> JobStart {
-        if self.task != job.task || self.token != job.token {
+        if self.task != job.task || self.id != job.id {
             return JobStart::Stale;
         }
         if self.started {
@@ -306,7 +310,7 @@ impl ActiveThumbnailJob {
     }
 
     fn finish(&mut self, job: &ThumbnailJob) -> ActiveJobCompletion {
-        if self.task != job.task || self.token != job.token {
+        if self.task != job.task || self.id != job.id {
             return ActiveJobCompletion::Stale;
         }
 
@@ -320,7 +324,7 @@ impl ActiveThumbnailJob {
 
     fn replace_with(&mut self, job: &ThumbnailJob) {
         self.task = job.task.clone();
-        self.token = job.token;
+        self.id = job.id;
         self.order = job.order;
         self.started = false;
     }
@@ -367,14 +371,14 @@ impl ThumbnailJob {
         task: TaskKey,
         report: PrinterStatus,
         order: JobOrder,
-        token: JobToken,
+        id: JobId,
     ) -> Self {
         Self {
             device_id,
             task,
             report,
             order,
-            token,
+            id,
         }
     }
 }
@@ -385,7 +389,7 @@ impl JobOrder {
     }
 }
 
-impl JobToken {
+impl JobId {
     pub(super) fn new(value: u64) -> Self {
         Self(value)
     }
@@ -395,21 +399,21 @@ impl JobToken {
 mod tests {
     use bytes::Bytes;
 
-    use super::{JobCompletion, JobOrder, JobStart, JobToken, ThumbnailJob, ThumbnailJobState};
+    use super::{JobCompletion, JobId, JobOrder, JobStart, ThumbnailJob, ThumbnailJobState};
     use crate::bambu::PrinterStatus;
     use crate::thumbnail::cache::TaskKey;
     use crate::thumbnail::{ThumbnailImage, ThumbnailStatus};
 
     struct TestJobs {
         state: ThumbnailJobState,
-        next_token: u64,
+        next_id: u64,
     }
 
     impl TestJobs {
         fn new() -> Self {
             Self {
                 state: ThumbnailJobState::default(),
-                next_token: 1,
+                next_id: 1,
             }
         }
 
@@ -432,14 +436,14 @@ mod tests {
             task: &TaskKey,
             order: JobOrder,
         ) -> Option<ThumbnailJob> {
-            let token = JobToken::new(self.next_token);
-            self.next_token += 1;
+            let id = JobId::new(self.next_id);
+            self.next_id += 1;
             self.state.schedule(ThumbnailJob::new(
                 device_id.to_owned(),
                 task.clone(),
                 PrinterStatus::default(),
                 order,
-                token,
+                id,
             ))
         }
 
