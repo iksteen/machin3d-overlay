@@ -1,13 +1,13 @@
 use std::{fmt, str::FromStr};
 
-use crate::bambu::MQTT_PORT;
+use crate::{bambu::MQTT_PORT, secret::Secret};
 
 use super::{endpoint::parse_endpoint, Endpoint, LocalEndpoint};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LocalEndpointConfig {
     pub endpoint: Endpoint,
-    pub access_code: Option<String>,
+    pub access_code: Option<Secret<String>>,
     pub name: Option<String>,
 }
 
@@ -16,7 +16,7 @@ impl LocalEndpointConfig {
         self.endpoint.clone()
     }
 
-    pub fn into_endpoint(self, access_code: String) -> LocalEndpoint {
+    pub fn into_endpoint(self, access_code: Secret<String>) -> LocalEndpoint {
         LocalEndpoint {
             endpoint: self.endpoint,
             access_code,
@@ -79,7 +79,7 @@ pub(crate) fn parse_access_code_arg(
     access_code: Option<&str>,
     label: &str,
     value: &str,
-) -> std::result::Result<Option<String>, String> {
+) -> std::result::Result<Option<Secret<String>>, String> {
     let access_code = access_code
         .map(str::trim)
         .filter(|access_code| !access_code.is_empty())
@@ -92,7 +92,7 @@ pub(crate) fn parse_access_code_arg(
             "invalid {label} `{value}`: access code must be ASCII"
         ));
     }
-    Ok(access_code)
+    Ok(access_code.map(Secret::new))
 }
 
 fn optional_field(fields: &[&str], index: usize) -> Option<String> {
@@ -117,7 +117,10 @@ mod tests {
 
         assert_eq!(device.endpoint.host, "192.168.1.50");
         assert_eq!(device.endpoint.port, 8883);
-        assert_eq!(device.access_code.as_deref(), Some("12345678"));
+        assert_eq!(
+            device.access_code.as_ref().map(|code| code.expose().as_str()),
+            Some("12345678")
+        );
         assert_eq!(device.name.as_deref(), Some("Office X1"));
     }
 
@@ -167,7 +170,10 @@ mod tests {
 
         assert_eq!(device.endpoint.host, "printer.local");
         assert_eq!(device.endpoint.port, 18883);
-        assert_eq!(device.access_code.as_deref(), Some("12345678"));
+        assert_eq!(
+            device.access_code.as_ref().map(|code| code.expose().as_str()),
+            Some("12345678")
+        );
         assert_eq!(device.name.as_deref(), Some("Office X1"));
     }
 }

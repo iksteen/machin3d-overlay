@@ -11,6 +11,7 @@ use std::collections::{HashMap, HashSet};
 use crate::{
     bambu::{CloudDevice, PrinterStatus},
     local::LocalDevice,
+    secret::Secret,
     video::VideoEndpoint,
 };
 use tracing::warn;
@@ -58,7 +59,7 @@ pub(crate) struct DeviceEntry {
 
 #[derive(Debug, Clone, Default)]
 struct DeviceCredentials {
-    access_code: Option<String>,
+    access_code: Option<Secret<String>>,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -119,7 +120,8 @@ impl DeviceEntry {
         let entry_access_code = self
             .credentials
             .access_code
-            .as_deref()
+            .as_ref()
+            .map(|code| code.expose().as_str())
             .and_then(non_empty_str);
         local_access_code.or(entry_access_code)
     }
@@ -128,7 +130,7 @@ impl DeviceEntry {
         self.access_code().is_some()
     }
 
-    pub(super) fn set_access_code(&mut self, access_code: Option<String>) {
+    pub(super) fn set_access_code(&mut self, access_code: Option<Secret<String>>) {
         self.credentials.access_code = access_code;
     }
 
@@ -258,6 +260,7 @@ mod tests {
     use crate::{
         bambu::CloudDevice,
         local::{LocalDevice, LocalEndpoint},
+        secret::Secret,
     };
 
     use super::DeviceRegistry;
@@ -279,7 +282,7 @@ mod tests {
                 CloudDevice {
                     id: Some(" printer-a ".to_owned()),
                     name: Some("Cloud Office".to_owned()),
-                    access_code: Some("87654321".to_owned()),
+                    access_code: Some(Secret::new("87654321".to_owned())),
                     ..CloudDevice::default()
                 },
                 CloudDevice {
@@ -339,7 +342,7 @@ mod tests {
         let registry = DeviceRegistry::new(
             vec![CloudDevice {
                 id: Some("printer-a".to_owned()),
-                access_code: Some("cloud-code".to_owned()),
+                access_code: Some(Secret::new("cloud-code".to_owned())),
                 ..CloudDevice::default()
             }],
             vec![local_device("printer-a", Some("Office"))],

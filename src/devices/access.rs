@@ -1,6 +1,6 @@
 use anyhow::Result;
 
-use crate::{local::LocalEndpointConfig, video::VideoEndpoint};
+use crate::{local::LocalEndpointConfig, secret::Secret, video::VideoEndpoint};
 
 use super::{metadata::BindCatalog, registry::DeviceEntry};
 
@@ -10,12 +10,12 @@ pub(super) async fn hydrate_local_config(
     video: Option<&VideoEndpoint>,
     bind_catalog: &mut BindCatalog<'_>,
 ) -> Result<()> {
-    if !has_access_code(endpoint.access_code.as_deref()) {
+    if !has_access_code(endpoint.access_code.as_ref()) {
         if let Some(video) = video {
-            endpoint.access_code = video.access_code().map(str::to_owned);
+            endpoint.access_code = video.access_code().map(|code| Secret::new(code.to_owned()));
         }
     }
-    if !has_access_code(endpoint.access_code.as_deref()) {
+    if !has_access_code(endpoint.access_code.as_ref()) {
         if let Some(metadata) = bind_catalog.load_device_from_cloud(device_id).await? {
             endpoint.access_code = metadata.access_code;
             if !has_text(endpoint.name.as_deref()) {
@@ -33,7 +33,7 @@ pub(super) async fn hydrate_device_entry(
 ) -> Result<()> {
     if !entry.has_access_code() {
         if let Some(video) = video {
-            entry.set_access_code(video.access_code().map(str::to_owned));
+            entry.set_access_code(video.access_code().map(|code| Secret::new(code.to_owned())));
         }
     }
     if !entry.has_access_code() {
@@ -54,8 +54,8 @@ pub(super) fn has_text(value: Option<&str>) -> bool {
     value.is_some_and(|value| !value.trim().is_empty())
 }
 
-fn has_access_code(access_code: Option<&str>) -> bool {
-    has_text(access_code)
+fn has_access_code(access_code: Option<&Secret<String>>) -> bool {
+    has_text(access_code.map(|code| code.expose().as_str()))
 }
 
 #[cfg(test)]
@@ -81,6 +81,9 @@ mod tests {
             .await
             .unwrap();
 
-        assert_eq!(local.access_code.as_deref(), Some("12345678"));
+        assert_eq!(
+            local.access_code.as_ref().map(|code| code.expose().as_str()),
+            Some("12345678")
+        );
     }
 }

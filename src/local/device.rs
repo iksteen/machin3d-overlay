@@ -1,11 +1,13 @@
 use std::fmt;
 
+use crate::secret::Secret;
+
 use super::Endpoint;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LocalEndpoint {
     pub endpoint: Endpoint,
-    pub access_code: String,
+    pub access_code: Secret<String>,
     pub name: Option<String>,
 }
 
@@ -20,7 +22,7 @@ impl LocalEndpoint {
     pub fn new(host: impl Into<String>, port: u16, access_code: impl Into<String>) -> Self {
         Self {
             endpoint: Endpoint::new(host, port),
-            access_code: access_code.into(),
+            access_code: Secret::new(access_code.into()),
             name: None,
         }
     }
@@ -34,7 +36,7 @@ impl LocalEndpoint {
     }
 
     pub fn access_code(&self) -> &str {
-        self.access_code.as_str()
+        self.access_code.expose().as_str()
     }
 }
 

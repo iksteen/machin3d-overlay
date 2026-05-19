@@ -10,6 +10,7 @@ use crate::{
     cloud::CloudSession,
     local::{Endpoint, LocalEndpointConfig, MqttEndpoint},
     monitor::{monitor_mqtt, MonitorConfig},
+    secret::Secret,
     server::{serve, ServerConfig, DEFAULT_HOST, DEFAULT_PORT},
     video::VideoEndpoint,
 };
@@ -206,7 +207,8 @@ async fn login(args: LoginArgs) -> Result<()> {
 
     let access_token = login_response
         .access_token
-        .as_deref()
+        .as_ref()
+        .map(|token| token.expose().as_str())
         .filter(|token| !token.trim().is_empty())
         .context("login response did not include accessToken")?;
     let uid = client
@@ -229,7 +231,10 @@ async fn login(args: LoginArgs) -> Result<()> {
 
 async fn devices_cmd(args: DevicesArgs) -> Result<()> {
     let cloud = token_client(Some(args.token.token_file), args.timeout)?;
-    let bound_devices = cloud.client.bound_devices(&cloud.access_token).await?;
+    let bound_devices = cloud
+        .client
+        .bound_devices(cloud.access_token.expose())
+        .await?;
 
     println!(
         "{:<24}  {:<32}  {:<8}  {:<12}",
@@ -238,7 +243,10 @@ async fn devices_cmd(args: DevicesArgs) -> Result<()> {
     for device in bound_devices.devices {
         let id = device.id.unwrap_or_else(|| "--".to_owned());
         let name = device.name.unwrap_or_else(|| "--".to_owned());
-        let access_code = device.access_code.unwrap_or_else(|| "--".to_owned());
+        let access_code = device
+            .access_code
+            .map(|code| code.into_inner())
+            .unwrap_or_else(|| "--".to_owned());
         let online = match device.online {
             Some(true) => "yes",
             Some(false) => "no",
@@ -271,7 +279,7 @@ fn optional_token_client(token_file: PathBuf, timeout: f64) -> Result<Option<Clo
 fn token_client(token_file: Option<PathBuf>, timeout: f64) -> Result<CloudSession> {
     let token_data = load_token(token_file)?;
     validate_token_freshness(&token_data)?;
-    let access_token = token_data.access_token.trim();
+    let access_token = token_data.access_token.expose().trim();
     if access_token.is_empty() {
         bail!("cached token file does not include accessToken");
     }
@@ -287,7 +295,7 @@ fn token_client(token_file: Option<PathBuf>, timeout: f64) -> Result<CloudSessio
     let client = BambuClient::new(api_base, Duration::from_secs_f64(timeout))?;
     Ok(CloudSession {
         client,
-        access_token: access_token.to_owned(),
+        access_token: Secret::new(access_token.to_owned()),
         user_id: user_id.to_owned(),
     })
 }
@@ -426,7 +434,7 @@ mod tests {
 
     fn token_with_expiry(expires_at: String) -> TokenData {
         TokenData {
-            access_token: "token".to_owned(),
+            access_token: super::Secret::new("token".to_owned()),
             api_base: None,
             uid: "123".to_owned(),
             expires_at: Some(expires_at),

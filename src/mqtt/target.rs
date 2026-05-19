@@ -8,6 +8,7 @@ use uuid::Uuid;
 use crate::{
     device_tls,
     local::{LocalDevice, MqttEndpoint},
+    secret::Secret,
 };
 
 const KEEPALIVE: Duration = Duration::from_secs(60);
@@ -17,7 +18,7 @@ pub(crate) enum MqttTarget {
     Cloud {
         endpoint: MqttEndpoint,
         user_id: String,
-        access_token: String,
+        access_token: Secret<String>,
         device_ids: Vec<String>,
     },
     Local(LocalDevice),
@@ -27,7 +28,7 @@ impl MqttTarget {
     pub(crate) fn cloud(
         endpoint: MqttEndpoint,
         user_id: String,
-        access_token: String,
+        access_token: Secret<String>,
         device_ids: Vec<String>,
     ) -> Self {
         Self::Cloud {
@@ -86,7 +87,7 @@ impl MqttTarget {
 fn cloud_mqtt_options(
     endpoint: &MqttEndpoint,
     user_id: &str,
-    access_token: &str,
+    access_token: &Secret<String>,
 ) -> Result<MqttOptions> {
     let username = if user_id.starts_with("u_") {
         user_id.to_owned()
@@ -99,7 +100,7 @@ fn cloud_mqtt_options(
         endpoint.port,
     );
     options.set_keep_alive(KEEPALIVE);
-    options.set_credentials(username, access_token);
+    options.set_credentials(username, access_token.expose());
     options.set_transport(default_mqtt_transport()?);
     Ok(options)
 }
@@ -111,7 +112,7 @@ fn local_mqtt_options(device: &LocalDevice) -> Result<MqttOptions> {
         device.endpoint.port(),
     );
     options.set_keep_alive(KEEPALIVE);
-    options.set_credentials("bblp", device.endpoint.access_code.as_str());
+    options.set_credentials("bblp", device.endpoint.access_code());
     options.set_transport(local_mqtt_transport()?);
     Ok(options)
 }

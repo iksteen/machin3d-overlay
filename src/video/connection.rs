@@ -141,7 +141,7 @@ async fn authenticate_stream(
     }
 
     socket
-        .write_all(&auth_packet(&session.access_code)?)
+        .write_all(&auth_packet(session.access_code.expose())?)
         .await
         .context("failed to send video authentication packet")?;
     socket

@@ -4,19 +4,20 @@ use crate::{
     bambu::{BambuClient, CloudDevice},
     local::MqttEndpoint,
     mqtt::MqttTarget,
+    secret::Secret,
 };
 
 #[derive(Clone)]
 pub struct CloudSession {
     pub client: BambuClient,
-    pub access_token: String,
+    pub access_token: Secret<String>,
     pub user_id: String,
 }
 
 pub(crate) struct CloudMqttStartup {
     pub(crate) endpoint: MqttEndpoint,
     pub(crate) user_id: String,
-    pub(crate) access_token: String,
+    pub(crate) access_token: Secret<String>,
     pub(crate) device_ids: Vec<String>,
 }
 
@@ -33,7 +34,10 @@ impl CloudMqttStartup {
 
 pub(crate) async fn bound_cloud_devices(cloud: Option<&CloudSession>) -> Result<Vec<CloudDevice>> {
     let cloud = cloud.context("Bambu Cloud /bind metadata requires a Bambu Cloud token")?;
-    let mut bound = cloud.client.bound_devices(&cloud.access_token).await?;
+    let mut bound = cloud
+        .client
+        .bound_devices(cloud.access_token.expose())
+        .await?;
     for device in &mut bound.devices {
         device.status = Default::default();
     }
@@ -77,7 +81,7 @@ pub(crate) fn cloud_mqtt_startup(
 
 #[cfg(test)]
 mod tests {
-    use super::{bound_cloud_devices, cloud_mqtt_startup, explicit_cloud_devices};
+    use super::{bound_cloud_devices, cloud_mqtt_startup, explicit_cloud_devices, Secret};
     use crate::{bambu::BambuClient, local::MqttEndpoint};
     use std::time::Duration;
 
@@ -88,7 +92,7 @@ mod tests {
     fn cloud_session(user_id: &str) -> super::CloudSession {
         super::CloudSession {
             client: BambuClient::new("https://example.invalid", Duration::from_secs(1)).unwrap(),
-            access_token: "access-token".to_owned(),
+            access_token: Secret::new("access-token".to_owned()),
             user_id: user_id.to_owned(),
         }
     }

@@ -9,6 +9,7 @@ pub(crate) mod devices;
 pub(crate) mod local;
 pub(crate) mod monitor;
 pub(crate) mod mqtt;
+pub mod secret;
 pub(crate) mod server;
 pub(crate) mod service;
 pub(crate) mod thumbnail;

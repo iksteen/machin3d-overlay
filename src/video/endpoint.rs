@@ -1,17 +1,20 @@
 use std::{fmt, str::FromStr};
 
-use crate::local::{parse_access_code_arg, Endpoint};
+use crate::{
+    local::{parse_access_code_arg, Endpoint},
+    secret::Secret,
+};
 
 pub const DEFAULT_VIDEO_PORT: u16 = 6000;
 
 #[derive(Clone, Debug, Eq)]
 pub struct VideoEndpoint {
     endpoint: Endpoint,
-    access_code: Option<String>,
+    access_code: Option<Secret<String>>,
 }
 
 impl VideoEndpoint {
-    pub fn new(endpoint: Endpoint, access_code: Option<String>) -> Self {
+    pub fn new(endpoint: Endpoint, access_code: Option<Secret<String>>) -> Self {
         Self {
             endpoint,
             access_code,
@@ -31,7 +34,7 @@ impl VideoEndpoint {
     }
 
     pub(crate) fn access_code(&self) -> Option<&str> {
-        self.access_code.as_deref()
+        self.access_code.as_ref().map(|code| code.expose().as_str())
     }
 }
 

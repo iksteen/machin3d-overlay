@@ -17,7 +17,7 @@ pub(super) async fn fetch_thumbnail(
     let cloud = cloud.context("cloud thumbnail lookup requires a Bambu Cloud token")?;
     let tasks = cloud
         .client
-        .tasks(&cloud.access_token, CLOUD_TASK_LIMIT, Some(device_id))
+        .tasks(cloud.access_token.expose(), CLOUD_TASK_LIMIT, Some(device_id))
         .await
         .with_context(|| format!("failed to load Bambu Cloud tasks for device `{device_id}`"))?;
     let task = select_cloud_task(&tasks.hits, report)

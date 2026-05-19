@@ -2,14 +2,14 @@ use std::collections::HashMap;
 
 use anyhow::{bail, Context, Result};
 
-use crate::devices::DeviceEntry;
+use crate::{devices::DeviceEntry, secret::Secret};
 
 use super::{stream::VideoState, VideoEndpoint};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) struct VideoSession {
     pub(super) device_id: String,
-    pub(super) access_code: String,
+    pub(super) access_code: Secret<String>,
 }
 
 pub(super) async fn resolve_session(
@@ -60,7 +60,7 @@ fn video_session(device: &DeviceEntry) -> Option<VideoSession> {
     }
     Some(VideoSession {
         device_id,
-        access_code,
+        access_code: Secret::new(access_code),
     })
 }
 
@@ -175,7 +175,7 @@ mod tests {
             .expect("single device should be selected");
 
         assert_eq!(session.device_id, "printer-a");
-        assert_eq!(session.access_code, "12345678");
+        assert_eq!(session.access_code.expose(), "12345678");
     }
 
     #[test]
@@ -188,7 +188,7 @@ mod tests {
             .expect("first video-capable device should be selected");
 
         assert_eq!(session.device_id, "printer-b");
-        assert_eq!(session.access_code, "22222222");
+        assert_eq!(session.access_code.expose(), "22222222");
     }
 
     #[test]
@@ -205,7 +205,7 @@ mod tests {
         .expect("requested device should be selected");
 
         assert_eq!(session.device_id, "printer-b");
-        assert_eq!(session.access_code, "22222222");
+        assert_eq!(session.access_code.expose(), "22222222");
     }
 
     #[test]

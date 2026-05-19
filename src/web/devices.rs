@@ -87,6 +87,7 @@ mod tests {
         bambu::CloudDevice,
         devices::DeviceRegistry,
         local::{LocalDevice, LocalEndpoint},
+        secret::Secret,
     };
 
     #[test]
@@ -96,7 +97,7 @@ mod tests {
                 id: Some("printer-b".to_owned()),
                 name: Some("Garage".to_owned()),
                 online: Some(false),
-                access_code: Some("87654321".to_owned()),
+                access_code: Some(Secret::new("87654321".to_owned())),
                 ..CloudDevice::default()
             }],
             vec![LocalDevice {

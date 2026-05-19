@@ -14,14 +14,14 @@ use uuid::Uuid;
 #[cfg(unix)]
 use std::os::unix::fs::OpenOptionsExt;
 
-use crate::bambu::LoginResponse;
+use crate::{bambu::LoginResponse, secret::Secret};
 
 static DEFAULT_TOKEN_PATH: OnceLock<PathBuf> = OnceLock::new();
 
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct TokenData {
-    pub access_token: String,
+    pub access_token: Secret<String>,
     pub api_base: Option<String>,
     pub uid: String,
     pub expires_at: Option<String>,
@@ -30,8 +30,8 @@ pub struct TokenData {
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 struct SavedToken<'a> {
-    access_token: &'a str,
-    refresh_token: Option<&'a str>,
+    access_token: &'a Secret<String>,
+    refresh_token: Option<&'a Secret<String>>,
     uid: &'a str,
     created_at: String,
     api_base: &'a str,
@@ -49,8 +49,8 @@ pub fn save_token(
 ) -> Result<PathBuf> {
     let access_token = login_response
         .access_token
-        .as_deref()
-        .filter(|token| !token.is_empty())
+        .as_ref()
+        .filter(|token| !token.expose().is_empty())
         .context("cannot save token: login response did not include accessToken")?;
     let uid = (!uid.trim().is_empty())
         .then_some(uid.trim())
@@ -59,7 +59,7 @@ pub fn save_token(
     let now = Utc::now();
     let token_data = SavedToken {
         access_token,
-        refresh_token: login_response.refresh_token.as_deref(),
+        refresh_token: login_response.refresh_token.as_ref(),
         uid,
         created_at: now.to_rfc3339(),
         api_base,

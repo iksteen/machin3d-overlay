@@ -246,7 +246,7 @@ impl DeviceVideoStream {
 mod tests {
     use std::{collections::HashMap, str::FromStr};
 
-    use crate::{bambu::CloudDevice, devices::DeviceRegistry, video::VideoEndpoint};
+    use crate::{bambu::CloudDevice, devices::DeviceRegistry, secret::Secret, video::VideoEndpoint};
 
     use super::VideoStreams;
 
@@ -260,12 +260,12 @@ mod tests {
             vec![
                 CloudDevice {
                     id: Some("printer-a".to_owned()),
-                    access_code: Some("11111111".to_owned()),
+                    access_code: Some(Secret::new("11111111".to_owned())),
                     ..CloudDevice::default()
                 },
                 CloudDevice {
                     id: Some("printer-b".to_owned()),
-                    access_code: Some("22222222".to_owned()),
+                    access_code: Some(Secret::new("22222222".to_owned())),
                     ..CloudDevice::default()
                 },
             ],

@@ -1,14 +1,16 @@
 use serde::{Deserialize, Serialize};
 
+use crate::secret::Secret;
+
 use super::de;
 
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct LoginResponse {
-    #[serde(default, deserialize_with = "de::optional_string")]
-    pub access_token: Option<String>,
-    #[serde(default, deserialize_with = "de::optional_string")]
-    pub refresh_token: Option<String>,
+    #[serde(default, deserialize_with = "de::optional_secret_string")]
+    pub access_token: Option<Secret<String>>,
+    #[serde(default, deserialize_with = "de::optional_secret_string")]
+    pub refresh_token: Option<Secret<String>>,
     #[serde(default, deserialize_with = "de::optional_i64")]
     pub expires_in: Option<i64>,
     #[serde(default, deserialize_with = "de::optional_string")]
@@ -37,9 +39,9 @@ pub struct CloudDevice {
     #[serde(
         default,
         rename = "dev_access_code",
-        deserialize_with = "de::optional_string"
+        deserialize_with = "de::optional_secret_string"
     )]
-    pub access_code: Option<String>,
+    pub access_code: Option<Secret<String>>,
     #[serde(default, rename = "print")]
     pub status: PrinterStatus,
 }

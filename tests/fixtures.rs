@@ -11,7 +11,10 @@ fn bind_fixture_uses_observed_device_fields() {
     assert_eq!(device.id.as_deref(), Some("printer-a"));
     assert_eq!(device.name.as_deref(), Some("Office X1"));
     assert_eq!(device.online, Some(true));
-    assert_eq!(device.access_code.as_deref(), Some("redacted"));
+    assert_eq!(
+        device.access_code.as_ref().map(|code| code.expose().as_str()),
+        Some("redacted")
+    );
 }
 
 #[test]

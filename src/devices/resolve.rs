@@ -149,9 +149,9 @@ fn should_enumerate_cloud_catalog(
 fn finalize_local_device(device_id: String, endpoint: LocalEndpointConfig) -> Result<LocalDevice> {
     let access_code = endpoint
         .access_code
-        .as_deref()
-        .filter(|access_code| !access_code.trim().is_empty())
-        .map(str::to_owned)
+        .as_ref()
+        .filter(|access_code| !access_code.expose().trim().is_empty())
+        .cloned()
         .with_context(|| {
             format!(
                 "--local-device `{}` is missing an access code; provide ACCESS_CODE or cloud metadata that exposes dev_access_code",

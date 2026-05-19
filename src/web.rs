@@ -136,8 +136,8 @@ mod tests {
     use tower::ServiceExt;
 
     use crate::{
-        bambu::CloudDevice, devices::DeviceRegistry, mqtt::MqttRuntime, service::Shutdown,
-        thumbnail::ThumbnailService, video::VideoStreams,
+        bambu::CloudDevice, devices::DeviceRegistry, mqtt::MqttRuntime, secret::Secret,
+        service::Shutdown, thumbnail::ThumbnailService, video::VideoStreams,
     };
 
     use super::{app_state, router};
@@ -184,7 +184,7 @@ mod tests {
         let registry = DeviceRegistry::new(
             vec![CloudDevice {
                 id: Some("printer a/1".to_owned()),
-                access_code: Some("12345678".to_owned()),
+                access_code: Some(Secret::new("12345678".to_owned())),
                 ..CloudDevice::default()
             }],
             Vec::new(),

@@ -5,11 +5,22 @@ use serde::{
     Deserializer,
 };
 
+use crate::secret::Secret;
+
 pub(super) fn optional_string<'de, D>(deserializer: D) -> Result<Option<String>, D::Error>
 where
     D: Deserializer<'de>,
 {
     optional::<String, D>(deserializer)
+}
+
+pub(super) fn optional_secret_string<'de, D>(
+    deserializer: D,
+) -> Result<Option<Secret<String>>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    optional_string(deserializer).map(|value| value.map(Secret::new))
 }
 
 pub(super) fn optional_f64<'de, D>(deserializer: D) -> Result<Option<f64>, D::Error>
