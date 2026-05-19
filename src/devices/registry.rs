@@ -5,6 +5,10 @@
 //! entries with the same ID, because local MQTT owns the live data path in that
 //! scenario. Credentials are kept behind accessors so web/API payloads cannot
 //! accidentally serialize access codes.
+//!
+//! `DeviceRegistry` is immutable once it has been handed out. Mutation during
+//! resolution goes through [`DeviceRegistryBuilder`], which returns a frozen
+//! `DeviceRegistry` from [`DeviceRegistryBuilder::build`].
 
 use std::collections::{HashMap, HashSet};
 
@@ -159,32 +163,23 @@ impl DeviceEntry {
     }
 }
 
-impl DeviceRegistry {
-    pub(crate) fn new(cloud_devices: Vec<CloudDevice>, local_devices: Vec<LocalDevice>) -> Self {
-        let local_ids = local_devices
-            .iter()
-            .map(|device| device.id.as_str())
-            .collect::<HashSet<_>>();
-        let mut registry = Self {
-            entries: Vec::new(),
-            entry_by_id: HashMap::new(),
-        };
-        for device in cloud_devices.into_iter().filter(|device| {
-            device
-                .id
-                .as_deref()
-                .map(str::trim)
-                .is_none_or(|device_id| !local_ids.contains(device_id))
-        }) {
-            if let Some(entry) = DeviceEntry::from_cloud(device) {
-                registry.push(entry);
-            }
-        }
-        for local in local_devices {
-            registry.push(DeviceEntry::from_local(local));
-        }
+/// Mutable construction surface for [`DeviceRegistry`].
+///
+/// Used during startup resolution to hydrate access codes and explicit video
+/// endpoints. Once [`build`](Self::build) is called, the resulting
+/// `DeviceRegistry` has no mutable API and cannot be modified.
+pub(crate) struct DeviceRegistryBuilder {
+    inner: DeviceRegistry,
+}
 
-        registry
+impl DeviceRegistry {
+    /// Convenience constructor for tests and call sites that do not need to
+    /// hydrate access codes or attach explicit video endpoints. Production code
+    /// goes through [`DeviceRegistryBuilder`] so hydration can happen before
+    /// the registry is frozen.
+    #[cfg(test)]
+    pub(crate) fn new(cloud_devices: Vec<CloudDevice>, local_devices: Vec<LocalDevice>) -> Self {
+        DeviceRegistryBuilder::new(cloud_devices, local_devices).build()
     }
 
     pub(crate) fn is_empty(&self) -> bool {
@@ -209,12 +204,6 @@ impl DeviceRegistry {
             .and_then(|index| self.entries.get(*index))
     }
 
-    pub(super) fn get_mut(&mut self, device_id: &str) -> Option<&mut DeviceEntry> {
-        self.entry_by_id
-            .get(device_id)
-            .and_then(|index| self.entries.get_mut(*index))
-    }
-
     pub(crate) fn local_devices(&self) -> Vec<LocalDevice> {
         self.entries
             .iter()
@@ -229,18 +218,62 @@ impl DeviceRegistry {
             .map(|entry| entry.device.id.clone())
             .collect()
     }
+}
+
+impl DeviceRegistryBuilder {
+    pub(crate) fn new(cloud_devices: Vec<CloudDevice>, local_devices: Vec<LocalDevice>) -> Self {
+        let local_ids = local_devices
+            .iter()
+            .map(|device| device.id.as_str())
+            .collect::<HashSet<_>>();
+        let mut builder = Self {
+            inner: DeviceRegistry {
+                entries: Vec::new(),
+                entry_by_id: HashMap::new(),
+            },
+        };
+        for device in cloud_devices.into_iter().filter(|device| {
+            device
+                .id
+                .as_deref()
+                .map(str::trim)
+                .is_none_or(|device_id| !local_ids.contains(device_id))
+        }) {
+            if let Some(entry) = DeviceEntry::from_cloud(device) {
+                builder.push(entry);
+            }
+        }
+        for local in local_devices {
+            builder.push(DeviceEntry::from_local(local));
+        }
+
+        builder
+    }
+
+    pub(super) fn entry_mut(&mut self, device_id: &str) -> Option<&mut DeviceEntry> {
+        self.inner
+            .entry_by_id
+            .get(device_id)
+            .and_then(|index| self.inner.entries.get_mut(*index))
+    }
+
+    pub(crate) fn build(self) -> DeviceRegistry {
+        self.inner
+    }
 
     fn push(&mut self, entry: DeviceEntry) {
         let device_id = entry.id().to_owned();
-        if self.entry_by_id.contains_key(&device_id) {
+        if self.inner.entry_by_id.contains_key(&device_id) {
             warn!(
                 device_id = %device_id,
                 "ignoring duplicate device entry in resolved catalog"
             );
             return;
         }
-        self.entry_by_id.insert(device_id, self.entries.len());
-        self.entries.push(entry);
+        self.inner
+            .entry_by_id
+            .insert(device_id, self.inner.entries.len());
+        self.inner.entries.push(entry);
     }
 }
 

@@ -12,7 +12,11 @@ use crate::{
     video::{infer_video_device_id, probe_video_endpoint, VideoEndpoint, DEFAULT_VIDEO_PORT},
 };
 
-use super::{access::hydrate_device_entry, metadata::BindCatalog, registry::DeviceRegistry};
+use super::{
+    access::hydrate_device_entry,
+    metadata::BindCatalog,
+    registry::{DeviceRegistry, DeviceRegistryBuilder},
+};
 
 const STARTUP_PROBE_CONCURRENCY: usize = 8;
 
@@ -85,11 +89,11 @@ impl ExplicitVideoEndpoints {
 
     pub(super) async fn attach(
         self,
-        registry: &mut DeviceRegistry,
+        builder: &mut DeviceRegistryBuilder,
         bind_catalog: &mut BindCatalog<'_>,
     ) -> Result<()> {
         for (device_id, video) in self.endpoints {
-            let Some(entry) = registry.get_mut(&device_id) else {
+            let Some(entry) = builder.entry_mut(&device_id) else {
                 anyhow::bail!(
                     "--video-device `{video}` is for device `{device_id}`, but no matching cloud or local device is configured"
                 );
@@ -191,7 +195,9 @@ fn local_video_endpoint(device: &LocalDevice) -> VideoEndpoint {
 mod tests {
     use crate::{
         bambu::CloudDevice,
-        devices::{metadata::BindCatalog, video::ExplicitVideoEndpoints, DeviceRegistry},
+        devices::{
+            metadata::BindCatalog, video::ExplicitVideoEndpoints, DeviceRegistryBuilder,
+        },
         local::{LocalDevice, LocalEndpoint},
         video::VideoEndpoint,
     };
@@ -230,7 +236,7 @@ mod tests {
 
     #[tokio::test]
     async fn explicit_video_requires_matching_known_device() {
-        let mut registry = DeviceRegistry::new(
+        let mut builder = DeviceRegistryBuilder::new(
             vec![CloudDevice {
                 id: Some("printer-b".to_owned()),
                 ..CloudDevice::default()
@@ -242,7 +248,7 @@ mod tests {
         let error = ExplicitVideoEndpoints {
             endpoints: vec![explicit_video_endpoint("printer-a", "192.168.1.50")],
         }
-        .attach(&mut registry, &mut bind_catalog)
+        .attach(&mut builder, &mut bind_catalog)
         .await
         .unwrap_err();
 
@@ -255,7 +261,7 @@ mod tests {
 
     #[tokio::test]
     async fn explicit_video_access_code_updates_cloud_device() {
-        let mut registry = DeviceRegistry::new(
+        let mut builder = DeviceRegistryBuilder::new(
             vec![CloudDevice {
                 id: Some("printer-a".to_owned()),
                 ..CloudDevice::default()
@@ -270,10 +276,11 @@ mod tests {
                 "192.168.1.50,12345678",
             )],
         }
-        .attach(&mut registry, &mut bind_catalog)
+        .attach(&mut builder, &mut bind_catalog)
         .await
         .unwrap();
 
+        let registry = builder.build();
         assert_eq!(
             registry.get("printer-a").unwrap().access_code(),
             Some("12345678")
@@ -282,7 +289,7 @@ mod tests {
 
     #[tokio::test]
     async fn explicit_video_loads_bind_when_code_is_missing() {
-        let mut registry = DeviceRegistry::new(
+        let mut builder = DeviceRegistryBuilder::new(
             vec![CloudDevice {
                 id: Some("printer-a".to_owned()),
                 ..CloudDevice::default()
@@ -294,7 +301,7 @@ mod tests {
         let error = ExplicitVideoEndpoints {
             endpoints: vec![explicit_video_endpoint("printer-a", "192.168.1.50")],
         }
-        .attach(&mut registry, &mut bind_catalog)
+        .attach(&mut builder, &mut bind_catalog)
         .await
         .unwrap_err();
 

@@ -13,7 +13,7 @@ use crate::{
 use super::{
     access::{has_text, hydrate_local_config},
     metadata::BindCatalog,
-    registry::DeviceRegistry,
+    registry::{DeviceRegistry, DeviceRegistryBuilder},
     video::ExplicitVideoEndpoints,
 };
 
@@ -40,10 +40,9 @@ pub(crate) async fn resolve_devices(
     );
     let local = resolve_local_devices(local_configs, &explicit_video, &mut bind_catalog).await?;
 
-    let mut registry = DeviceRegistry::new(cloud_devices, local);
-    explicit_video
-        .attach(&mut registry, &mut bind_catalog)
-        .await?;
+    let mut builder = DeviceRegistryBuilder::new(cloud_devices, local);
+    explicit_video.attach(&mut builder, &mut bind_catalog).await?;
+    let registry = builder.build();
     if registry.is_empty() {
         anyhow::bail!(
             "no devices configured; run `bambu-overlay login`, set --cloud-device, or set --local-device"
