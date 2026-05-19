@@ -1,3 +1,5 @@
+use std::collections::HashMap;
+
 use anyhow::{bail, Context, Result};
 
 use crate::devices::DeviceEntry;
@@ -14,11 +16,16 @@ pub(super) async fn resolve_session(
     state: &VideoState,
     requested_device_id: Option<&str>,
 ) -> Result<VideoSession> {
-    select_session(state.registry.entries(), requested_device_id)
+    select_session(
+        state.registry.entries(),
+        &state.endpoints_by_device,
+        requested_device_id,
+    )
 }
 
 pub(super) fn select_session<'a>(
     devices: impl IntoIterator<Item = &'a DeviceEntry>,
+    endpoints_by_device: &HashMap<String, Vec<VideoEndpoint>>,
     requested_device_id: Option<&str>,
 ) -> Result<VideoSession> {
     let mut devices = devices.into_iter();
@@ -30,15 +37,19 @@ pub(super) fn select_session<'a>(
         let Some(device) = devices.find(|device| device.id().trim() == requested_device_id) else {
             bail!("device `{requested_device_id}` is not known");
         };
+        if !has_video_endpoint(endpoints_by_device, device.id()) {
+            bail!("device `{requested_device_id}` has no known video endpoint");
+        }
         return video_session(device).with_context(|| {
             format!("device `{requested_device_id}` did not include dev_access_code")
         });
     }
 
-    let Some(device) = devices.next() else {
-        bail!("no devices are known");
+    let Some(device) = devices.find(|device| has_video_endpoint(endpoints_by_device, device.id()))
+    else {
+        bail!("no devices have known video endpoints");
     };
-    video_session(device).context("first device did not include dev_access_code")
+    video_session(device).context("first video-capable device did not include dev_access_code")
 }
 
 fn video_session(device: &DeviceEntry) -> Option<VideoSession> {
@@ -54,7 +65,11 @@ fn video_session(device: &DeviceEntry) -> Option<VideoSession> {
 }
 
 pub(super) async fn candidate_endpoints(state: &VideoState, device_id: &str) -> Vec<VideoEndpoint> {
-    let endpoints = state.endpoints.clone();
+    let endpoints = state
+        .endpoints_by_device
+        .get(device_id)
+        .cloned()
+        .unwrap_or_default();
     let remembered = state
         .remembered_endpoints
         .lock()
@@ -90,6 +105,9 @@ pub(super) async fn remember_endpoint(
     device_id: &str,
     endpoint: &VideoEndpoint,
 ) {
+    if !has_video_endpoint_value(&state.endpoints_by_device, device_id, endpoint) {
+        return;
+    }
     state
         .remembered_endpoints
         .lock()
@@ -97,9 +115,28 @@ pub(super) async fn remember_endpoint(
         .insert(device_id.to_owned(), endpoint.clone());
 }
 
+fn has_video_endpoint(
+    endpoints_by_device: &HashMap<String, Vec<VideoEndpoint>>,
+    device_id: &str,
+) -> bool {
+    endpoints_by_device
+        .get(device_id)
+        .is_some_and(|endpoints| !endpoints.is_empty())
+}
+
+fn has_video_endpoint_value(
+    endpoints_by_device: &HashMap<String, Vec<VideoEndpoint>>,
+    device_id: &str,
+    endpoint: &VideoEndpoint,
+) -> bool {
+    endpoints_by_device
+        .get(device_id)
+        .is_some_and(|endpoints| endpoints.iter().any(|known| known == endpoint))
+}
+
 #[cfg(test)]
 mod tests {
-    use std::str::FromStr;
+    use std::{collections::HashMap, str::FromStr};
 
     use serde_json::json;
 
@@ -121,30 +158,37 @@ mod tests {
         VideoEndpoint::from_str(value).expect("endpoint should parse")
     }
 
+    fn video_endpoints(device_ids: &[&str]) -> HashMap<String, Vec<VideoEndpoint>> {
+        device_ids
+            .iter()
+            .map(|device_id| ((*device_id).to_owned(), vec![endpoint("192.168.1.50")]))
+            .collect()
+    }
+
     #[test]
     fn selected_session_uses_real_cloud_field_names() {
         let registry = devices(vec![json!({
             "dev_id": "printer-a",
             "dev_access_code": "12345678\n"
         })]);
-        let session =
-            select_session(registry.entries(), None).expect("single device should be selected");
+        let session = select_session(registry.entries(), &video_endpoints(&["printer-a"]), None)
+            .expect("single device should be selected");
 
         assert_eq!(session.device_id, "printer-a");
         assert_eq!(session.access_code, "12345678");
     }
 
     #[test]
-    fn selected_session_uses_first_stable_device_by_default() {
+    fn selected_session_uses_first_video_capable_device_by_default() {
         let registry = devices(vec![
             json!({"dev_id": "printer-a", "dev_access_code": "11111111"}),
             json!({"dev_id": "printer-b", "dev_access_code": "22222222"}),
         ]);
-        let session =
-            select_session(registry.entries(), None).expect("first device should be selected");
+        let session = select_session(registry.entries(), &video_endpoints(&["printer-b"]), None)
+            .expect("first video-capable device should be selected");
 
-        assert_eq!(session.device_id, "printer-a");
-        assert_eq!(session.access_code, "11111111");
+        assert_eq!(session.device_id, "printer-b");
+        assert_eq!(session.access_code, "22222222");
     }
 
     #[test]
@@ -153,8 +197,12 @@ mod tests {
             json!({"dev_id": "printer-a", "dev_access_code": "11111111"}),
             json!({"dev_id": "printer-b", "dev_access_code": "22222222"}),
         ]);
-        let session = select_session(registry.entries(), Some("printer-b"))
-            .expect("requested device should be selected");
+        let session = select_session(
+            registry.entries(),
+            &video_endpoints(&["printer-b"]),
+            Some("printer-b"),
+        )
+        .expect("requested device should be selected");
 
         assert_eq!(session.device_id, "printer-b");
         assert_eq!(session.access_code, "22222222");
@@ -166,9 +214,28 @@ mod tests {
             "dev_id": "printer-a",
             "dev_access_code": "11111111"
         })]);
-        let error = select_session(registry.entries(), Some("printer-b")).unwrap_err();
+        let error = select_session(
+            registry.entries(),
+            &video_endpoints(&["printer-a"]),
+            Some("printer-b"),
+        )
+        .unwrap_err();
 
         assert!(error.to_string().contains("printer-b"));
+    }
+
+    #[test]
+    fn selected_session_rejects_known_device_without_video_endpoint() {
+        let registry = devices(vec![json!({
+            "dev_id": "printer-a",
+            "dev_access_code": "11111111"
+        })]);
+
+        let error =
+            select_session(registry.entries(), &HashMap::new(), Some("printer-a")).unwrap_err();
+
+        assert!(error.to_string().contains("printer-a"));
+        assert!(error.to_string().contains("no known video endpoint"));
     }
 
     #[test]

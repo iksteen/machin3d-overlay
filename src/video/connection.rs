@@ -79,7 +79,7 @@ async fn stream_from_endpoint(
 ) -> Result<()> {
     let address = endpoint.address();
     let tcp = connect_video_tcp(endpoint, CONNECT_TIMEOUT, "connecting to video server").await?;
-    let mut socket = authenticate_stream(state, tcp, &address, session, endpoint).await?;
+    let mut socket = authenticate_stream(state, tcp, &address, session).await?;
 
     info!(
         device_id = %session.device_id,
@@ -125,7 +125,6 @@ async fn authenticate_stream(
     tcp: TcpStream,
     address: &str,
     session: &VideoSession,
-    endpoint: &VideoEndpoint,
 ) -> Result<tokio_native_tls::TlsStream<TcpStream>> {
     let mut socket = state
         .tls
@@ -135,7 +134,6 @@ async fn authenticate_stream(
     let certificate_device_id = device_tls::peer_device_id(&socket)
         .context("video server certificate did not include a usable common name")?;
     if certificate_device_id != session.device_id {
-        remember_endpoint(state, &certificate_device_id, endpoint).await;
         bail!(
             "video endpoint certificate is for device `{certificate_device_id}`, not requested device `{}`",
             session.device_id

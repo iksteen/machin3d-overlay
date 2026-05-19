@@ -21,9 +21,27 @@ pub(super) struct ExplicitVideoEndpoints {
     endpoints: Vec<(String, VideoEndpoint)>,
 }
 
+#[derive(Default)]
 pub(crate) struct ResolvedVideoEndpoints {
-    pub(crate) endpoints: Vec<VideoEndpoint>,
-    pub(crate) device_endpoints: HashMap<String, VideoEndpoint>,
+    pub(crate) endpoints_by_device: HashMap<String, Vec<VideoEndpoint>>,
+}
+
+impl ResolvedVideoEndpoints {
+    fn add(&mut self, device_id: impl Into<String>, endpoint: VideoEndpoint) {
+        let endpoints = self
+            .endpoints_by_device
+            .entry(device_id.into())
+            .or_default();
+        if !endpoints.iter().any(|known| known == &endpoint) {
+            endpoints.push(endpoint);
+        }
+    }
+
+    fn has_endpoint(&self, device_id: &str, endpoint: &VideoEndpoint) -> bool {
+        self.endpoints_by_device
+            .get(device_id)
+            .is_some_and(|endpoints| endpoints.iter().any(|known| known == endpoint))
+    }
 }
 
 impl ExplicitVideoEndpoints {
@@ -98,9 +116,7 @@ fn ensure_unique_video_devices(endpoints: &[(String, VideoEndpoint)]) -> Result<
 pub(crate) async fn resolve_video_endpoints(
     registry: &DeviceRegistry,
 ) -> Result<ResolvedVideoEndpoints> {
-    let mut endpoints = Vec::new();
-    let mut device_endpoints = HashMap::new();
-    let mut candidates = Vec::new();
+    let mut resolved = ResolvedVideoEndpoints::default();
     let mut probes = tokio::task::JoinSet::new();
     let semaphore = Arc::new(Semaphore::new(STARTUP_PROBE_CONCURRENCY));
 
@@ -113,18 +129,15 @@ pub(crate) async fn resolve_video_endpoints(
             endpoint = %endpoint,
             "validated explicit local video endpoint"
         );
-        endpoints.push(endpoint.clone());
-        candidates.push(endpoint.clone());
-        device_endpoints.insert(entry.id().to_owned(), endpoint.clone());
+        resolved.add(entry.id(), endpoint.clone());
     }
 
     for device in registry.local_devices() {
         let endpoint = local_video_endpoint(&device);
-        if candidates.iter().any(|candidate| candidate == &endpoint) {
+        if resolved.has_endpoint(&device.id, &endpoint) {
             continue;
         }
 
-        candidates.push(endpoint.clone());
         let device_id = device.id.clone();
         let semaphore = Arc::clone(&semaphore);
         probes.spawn(async move {
@@ -148,8 +161,7 @@ pub(crate) async fn resolve_video_endpoints(
                     endpoint = %endpoint,
                     "auto-enabled local video endpoint"
                 );
-                device_endpoints.insert(device_id, endpoint.clone());
-                endpoints.push(endpoint);
+                resolved.add(device_id, endpoint);
             }
             Ok((device_id, endpoint, Err(error))) => {
                 debug!(
@@ -165,10 +177,7 @@ pub(crate) async fn resolve_video_endpoints(
         }
     }
 
-    Ok(ResolvedVideoEndpoints {
-        endpoints,
-        device_endpoints,
-    })
+    Ok(resolved)
 }
 
 fn local_video_endpoint(device: &LocalDevice) -> VideoEndpoint {

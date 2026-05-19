@@ -106,11 +106,7 @@ impl ServiceGraph {
         let cloud_mqtt = cloud_mqtt_startup(cloud.as_ref(), &config.cloud_mqtt, &cloud_mqtt_ids)?
             .map(|startup| startup.into_target());
         let video_endpoints = resolve_video_endpoints(&registry).await?;
-        let video = VideoStreams::new(
-            registry.clone(),
-            video_endpoints.endpoints,
-            video_endpoints.device_endpoints,
-        )?;
+        let video = VideoStreams::new(registry.clone(), video_endpoints.endpoints_by_device)?;
         let thumbnail = ThumbnailService::new(mqtt.clone(), cloud.clone(), registry.clone());
         let local_devices = registry.local_devices();
         let state = app_state(

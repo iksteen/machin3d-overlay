@@ -37,7 +37,7 @@ pub struct VideoStreams {
 
 pub(super) struct VideoState {
     pub(super) registry: DeviceRegistry,
-    pub(super) endpoints: Vec<VideoEndpoint>,
+    pub(super) endpoints_by_device: HashMap<String, Vec<VideoEndpoint>>,
     pub(super) tls: TlsConnector,
     pub(super) device_streams: Mutex<HashMap<String, Arc<DeviceVideoStream>>>,
     pub(super) remembered_endpoints: Mutex<HashMap<String, VideoEndpoint>>,
@@ -65,18 +65,17 @@ struct VideoSubscriptionGuard {
 impl VideoStreams {
     pub(crate) fn new(
         registry: DeviceRegistry,
-        endpoints: Vec<VideoEndpoint>,
-        remembered_endpoints: HashMap<String, VideoEndpoint>,
+        endpoints_by_device: HashMap<String, Vec<VideoEndpoint>>,
     ) -> Result<Self> {
         let tls = device_tls::tokio_connector()?;
         let (worker_tx, worker_rx) = mpsc::channel(WORKER_QUEUE_CAPACITY);
         Ok(Self {
             state: Arc::new(VideoState {
                 registry,
-                endpoints,
+                endpoints_by_device,
                 tls,
                 device_streams: Mutex::new(HashMap::new()),
-                remembered_endpoints: Mutex::new(remembered_endpoints),
+                remembered_endpoints: Mutex::new(HashMap::new()),
                 worker_tx,
                 worker_rx: Mutex::new(worker_rx),
             }),
@@ -84,7 +83,7 @@ impl VideoStreams {
     }
 
     pub async fn subscribe(&self, device_id: Option<&str>) -> Result<VideoSubscription> {
-        if self.state.endpoints.is_empty() {
+        if self.state.endpoints_by_device.is_empty() {
             bail!("video stream is disabled; set at least one --video-device");
         }
 
@@ -104,13 +103,7 @@ impl VideoStreams {
     }
 
     pub async fn known_device_ids(&self) -> HashSet<String> {
-        self.state
-            .remembered_endpoints
-            .lock()
-            .await
-            .keys()
-            .cloned()
-            .collect()
+        self.state.endpoints_by_device.keys().cloned().collect()
     }
 
     pub(crate) async fn watch_workers(&self, mut shutdown: ShutdownReceiver) {
@@ -246,5 +239,50 @@ impl DeviceVideoStream {
         if let Some(worker) = self.worker.lock().await.as_ref() {
             worker.abort();
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::{collections::HashMap, str::FromStr};
+
+    use crate::{bambu::CloudDevice, devices::DeviceRegistry, video::VideoEndpoint};
+
+    use super::VideoStreams;
+
+    fn endpoint(value: &str) -> VideoEndpoint {
+        VideoEndpoint::from_str(value).expect("endpoint should parse")
+    }
+
+    #[tokio::test]
+    async fn subscribe_rejects_device_without_endpoint_even_when_video_is_enabled() {
+        let registry = DeviceRegistry::new(
+            vec![
+                CloudDevice {
+                    id: Some("printer-a".to_owned()),
+                    access_code: Some("11111111".to_owned()),
+                    ..CloudDevice::default()
+                },
+                CloudDevice {
+                    id: Some("printer-b".to_owned()),
+                    access_code: Some("22222222".to_owned()),
+                    ..CloudDevice::default()
+                },
+            ],
+            Vec::new(),
+        );
+        let streams = VideoStreams::new(
+            registry,
+            HashMap::from([("printer-b".to_owned(), vec![endpoint("192.168.1.50")])]),
+        )
+        .expect("video streams should initialize");
+
+        let error = match streams.subscribe(Some("printer-a")).await {
+            Ok(_) => panic!("device without endpoint should not subscribe"),
+            Err(error) => error,
+        };
+
+        assert!(error.to_string().contains("printer-a"));
+        assert!(error.to_string().contains("no known video endpoint"));
     }
 }
