@@ -18,6 +18,7 @@ pub(super) fn to_live(status: &Map<String, Value>) -> PrinterReport {
 
     let toolhead_temperature = active_extruder_temperature(status);
     let bed_temperature = get_f64(status, "heater_bed", "temperature");
+    let fan_speed = get_f64(status, "fan", "speed").map(|fraction| (fraction * 100.0).clamp(0.0, 100.0));
 
     let layer_current = get_print_info_i64(status, "current_layer");
     let layer_total = get_print_info_i64(status, "total_layer");
@@ -39,7 +40,7 @@ pub(super) fn to_live(status: &Map<String, Value>) -> PrinterReport {
         layer_total,
         toolhead_temperature,
         bed_temperature,
-        fan_speed: None,
+        fan_speed,
         print_mode: None,
         materials,
         active_material,
@@ -128,7 +129,8 @@ mod tests {
             "extruder1": { "temperature": 24.0, "active_pin": false },
             "extruder2": { "temperature": 25.0, "active_pin": false },
             "extruder3": { "temperature": 26.0, "active_pin": false },
-            "heater_bed": { "temperature": 60.5 }
+            "heater_bed": { "temperature": 60.5 },
+            "fan": { "speed": 0.6 }
         })));
 
         assert_eq!(report.status.as_deref(), Some("RUNNING"));
@@ -138,6 +140,7 @@ mod tests {
         assert_eq!(report.layer_total, Some(80));
         assert_eq!(report.toolhead_temperature, Some(215.0));
         assert_eq!(report.bed_temperature, Some(60.5));
+        assert_eq!(report.fan_speed, Some(60.0));
         assert_eq!(report.materials.len(), 4);
         assert_eq!(report.materials[0].label, "T1");
         assert_eq!(report.materials[3].label, "T4");

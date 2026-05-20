@@ -28,6 +28,7 @@ const SUBSCRIBE_OBJECTS: &[&str] = &[
     "extruder2",
     "extruder3",
     "heater_bed",
+    "fan",
     "virtual_sdcard",
     "print_task_config",
     "gcode_move",
