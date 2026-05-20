@@ -11,9 +11,12 @@ use chrono::{DateTime, Utc};
 use serde::Serialize;
 use tokio::sync::{broadcast, RwLock};
 
-use crate::bambu::PrinterStatus;
+use crate::{
+    bambu::{printer_status_to_live, PrinterStatus},
+    live::{ConnectionStatus, DeviceConnection, DeviceLiveState, PrintActivity},
+};
 
-use super::{MqttConnectionStatus, MqttDeviceConnection, MqttDeviceState, PrintActivity};
+use super::MqttDeviceState;
 
 #[derive(Clone)]
 pub struct MqttRuntime {
@@ -24,13 +27,13 @@ pub struct MqttRuntime {
 #[derive(Default)]
 struct MqttState {
     revision: u64,
-    devices: HashMap<String, DeviceLiveState>,
+    devices: HashMap<String, StoredDeviceState>,
     connections: HashMap<String, MqttConnectionState>,
     updated_at: Option<String>,
 }
 
 #[derive(Default)]
-struct DeviceLiveState {
+struct StoredDeviceState {
     report: Option<MqttReportState>,
 }
 
@@ -66,11 +69,19 @@ pub struct MqttStatusPayload {
     pub updated_at: Option<String>,
 }
 
+/// Bambu-specific snapshot consumed by the thumbnail service: it needs the
+/// raw `PrinterStatus` to drive cloud-task lookup and 3MF download.
 #[derive(Debug, Clone)]
 pub(crate) struct MqttSnapshot {
     pub(crate) revision: u64,
     pub(crate) devices: HashMap<String, MqttDeviceState>,
-    pub(crate) connections: HashMap<String, MqttDeviceConnection>,
+}
+
+/// Vendor-neutral snapshot consumed by the summary/web layer.
+#[derive(Debug, Clone)]
+pub(crate) struct LiveSnapshot {
+    pub(crate) devices: HashMap<String, DeviceLiveState>,
+    pub(crate) connections: HashMap<String, DeviceConnection>,
     pub(crate) status: MqttStatusPayload,
 }
 
@@ -90,7 +101,6 @@ impl MqttRuntime {
     pub(crate) async fn snapshot(&self) -> MqttSnapshot {
         let state = self.inner.read().await;
         let device_connections = device_connections(&state.connections);
-        let connections = snapshot_connections(&state.connections);
         let devices = state
             .devices
             .iter()
@@ -106,6 +116,29 @@ impl MqttRuntime {
 
         MqttSnapshot {
             revision: state.revision,
+            devices,
+        }
+    }
+
+    /// Vendor-neutral snapshot for the summary/web layer.
+    pub(crate) async fn live_snapshot(&self) -> LiveSnapshot {
+        let state = self.inner.read().await;
+        let device_connections = device_connections(&state.connections);
+        let connections = snapshot_connections(&state.connections);
+        let devices = state
+            .devices
+            .iter()
+            .filter_map(|(device_id, device)| {
+                let report = device.report.as_ref()?;
+                let connection_key = device_connections.get(device_id).cloned();
+                Some((
+                    device_id.clone(),
+                    live_device_state(connection_key, report, &state.connections),
+                ))
+            })
+            .collect();
+
+        LiveSnapshot {
             devices,
             connections,
             status: status_payload(&state),
@@ -192,13 +225,13 @@ impl MqttRuntime {
             let activity = if let Some(report_state) = &mut device.report {
                 report_state.report.merge(report);
                 report_state.last_report_at = now;
-                PrintActivity::from_report(&report_state.report)
+                PrintActivity::from_status(report_state.report.status.as_deref())
             } else {
                 let report_state = device.report.insert(MqttReportState {
                     report,
                     last_report_at: now,
                 });
-                PrintActivity::from_report(&report_state.report)
+                PrintActivity::from_status(report_state.report.status.as_deref())
             };
             if let PrintActivity::Unknown(gcode_state) = activity {
                 tracing::debug!(
@@ -239,10 +272,23 @@ fn device_state(
     )
 }
 
+fn live_device_state(
+    key: Option<String>,
+    report: &MqttReportState,
+    connections: &HashMap<String, MqttConnectionState>,
+) -> DeviceLiveState {
+    let connection = connection_state_for_report(key, Some(report.last_report_at), connections);
+    DeviceLiveState::from_snapshot(
+        printer_status_to_live(&report.report),
+        Some(report.last_report_at),
+        connection,
+    )
+}
+
 fn connection_state(
     key: Option<String>,
     connections: &HashMap<String, MqttConnectionState>,
-) -> MqttDeviceConnection {
+) -> DeviceConnection {
     connection_state_for_report(key, None, connections)
 }
 
@@ -250,17 +296,17 @@ fn connection_state_for_report(
     key: Option<String>,
     last_report_at: Option<DateTime<Utc>>,
     connections: &HashMap<String, MqttConnectionState>,
-) -> MqttDeviceConnection {
+) -> DeviceConnection {
     key.as_deref()
         .and_then(|key| connections.get(key))
-        .map(|connection| MqttDeviceConnection {
+        .map(|connection| DeviceConnection {
             key: key.clone(),
             status: device_connection_status(connection, last_report_at),
             error: connection.error.clone(),
         })
-        .unwrap_or_else(|| MqttDeviceConnection {
+        .unwrap_or_else(|| DeviceConnection {
             key,
-            status: MqttConnectionStatus::Disconnected,
+            status: ConnectionStatus::Disconnected,
             error: Some("MQTT connection has not been registered".to_owned()),
         })
 }
@@ -268,15 +314,15 @@ fn connection_state_for_report(
 fn device_connection_status(
     connection: &MqttConnectionState,
     last_report_at: Option<DateTime<Utc>>,
-) -> MqttConnectionStatus {
+) -> ConnectionStatus {
     match connection.status {
-        MqttTransportStatus::Disconnected => MqttConnectionStatus::Disconnected,
-        MqttTransportStatus::Connecting => MqttConnectionStatus::Connecting,
+        MqttTransportStatus::Disconnected => ConnectionStatus::Disconnected,
+        MqttTransportStatus::Connecting => ConnectionStatus::Connecting,
         MqttTransportStatus::Connected { connected_at } => {
             if last_report_at.is_some_and(|last_report_at| last_report_at >= connected_at) {
-                MqttConnectionStatus::Connected
+                ConnectionStatus::Connected
             } else {
-                MqttConnectionStatus::Connecting
+                ConnectionStatus::Connecting
             }
         }
     }
@@ -297,7 +343,7 @@ fn clear_reports_for_connection(state: &mut MqttState, key: &str) {
 
 fn snapshot_connections(
     connections: &HashMap<String, MqttConnectionState>,
-) -> HashMap<String, MqttDeviceConnection> {
+) -> HashMap<String, DeviceConnection> {
     let mut snapshot = HashMap::new();
     for (key, connection) in connections {
         for device_id in &connection.device_ids {
@@ -394,7 +440,7 @@ impl Default for MqttRuntime {
 mod tests {
     use std::time::Duration;
 
-    use crate::{bambu::PrinterStatus, mqtt::MqttConnectionStatus};
+    use crate::{bambu::PrinterStatus, live::ConnectionStatus};
 
     use super::MqttRuntime;
 
@@ -421,15 +467,15 @@ mod tests {
             .await;
         runtime.set_connection_connecting("printer-a").await;
 
-        let snapshot = runtime.snapshot().await;
+        let snapshot = runtime.live_snapshot().await;
         let connection = snapshot.connections.get("printer-a").unwrap();
-        assert_eq!(connection.status, MqttConnectionStatus::Connecting);
+        assert_eq!(connection.status, ConnectionStatus::Connecting);
 
         runtime.set_connection_connected("printer-a").await;
 
-        let snapshot = runtime.snapshot().await;
+        let snapshot = runtime.live_snapshot().await;
         let connection = snapshot.connections.get("printer-a").unwrap();
-        assert_eq!(connection.status, MqttConnectionStatus::Connecting);
+        assert_eq!(connection.status, ConnectionStatus::Connecting);
 
         runtime
             .merge_report(
@@ -441,30 +487,30 @@ mod tests {
             )
             .await;
 
-        let snapshot = runtime.snapshot().await;
+        let snapshot = runtime.live_snapshot().await;
         let state = snapshot.devices.get("printer-a").unwrap();
         let connection = snapshot.connections.get("printer-a").unwrap();
         assert!(state.is_fresh());
         assert!(state.is_active_task());
-        assert_eq!(state.connection.status, MqttConnectionStatus::Connected);
-        assert_eq!(connection.status, MqttConnectionStatus::Connecting);
+        assert_eq!(state.connection.status, ConnectionStatus::Connected);
+        assert_eq!(connection.status, ConnectionStatus::Connecting);
         assert!(state.last_report_at.is_some());
         assert_eq!(state.connection.key.as_deref(), Some("printer-a"));
 
         runtime.set_connection_disconnected("printer-a").await;
 
-        let snapshot = runtime.snapshot().await;
+        let snapshot = runtime.live_snapshot().await;
         let connection = snapshot.connections.get("printer-a").unwrap();
         assert!(!snapshot.devices.contains_key("printer-a"));
-        assert_eq!(connection.status, MqttConnectionStatus::Disconnected);
+        assert_eq!(connection.status, ConnectionStatus::Disconnected);
         assert!(!snapshot.status.any_connected);
 
         runtime.set_connection_connected("printer-a").await;
 
-        let snapshot = runtime.snapshot().await;
+        let snapshot = runtime.live_snapshot().await;
         let connection = snapshot.connections.get("printer-a").unwrap();
         assert!(!snapshot.devices.contains_key("printer-a"));
-        assert_eq!(connection.status, MqttConnectionStatus::Connecting);
+        assert_eq!(connection.status, ConnectionStatus::Connecting);
 
         runtime
             .merge_report(
@@ -476,11 +522,11 @@ mod tests {
             )
             .await;
 
-        let snapshot = runtime.snapshot().await;
+        let snapshot = runtime.live_snapshot().await;
         let state = snapshot.devices.get("printer-a").unwrap();
         assert!(state.is_fresh());
         assert!(state.is_active_task());
-        assert_eq!(state.connection.status, MqttConnectionStatus::Connected);
+        assert_eq!(state.connection.status, ConnectionStatus::Connected);
     }
 
     #[tokio::test]
@@ -502,7 +548,7 @@ mod tests {
 
         runtime.set_connection_disconnected("printer-a").await;
 
-        let disconnected = runtime.snapshot().await;
+        let disconnected = runtime.live_snapshot().await;
         assert!(!disconnected.devices.contains_key("printer-a"));
 
         runtime.set_connection_connected("printer-a").await;
@@ -516,7 +562,7 @@ mod tests {
             )
             .await;
 
-        let snapshot = runtime.snapshot().await;
+        let snapshot = runtime.live_snapshot().await;
         let state = snapshot.devices.get("printer-a").unwrap();
         assert_eq!(state.report.task_name.as_deref(), Some("new"));
     }
@@ -542,7 +588,7 @@ mod tests {
             .register_connection("local", vec!["printer-a".to_owned()])
             .await;
 
-        let snapshot = runtime.snapshot().await;
+        let snapshot = runtime.live_snapshot().await;
         assert_eq!(
             snapshot
                 .connections
@@ -580,7 +626,7 @@ mod tests {
             .register_connection("cloud", vec!["printer-b".to_owned()])
             .await;
 
-        let snapshot = runtime.snapshot().await;
+        let snapshot = runtime.live_snapshot().await;
         assert!(!snapshot.devices.contains_key("printer-a"));
         assert!(!snapshot.connections.contains_key("printer-a"));
         assert!(snapshot.connections.contains_key("printer-b"));

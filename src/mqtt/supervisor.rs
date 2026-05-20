@@ -153,7 +153,7 @@ fn payload_preview(payload: &[u8]) -> String {
 mod tests {
     use std::collections::HashSet;
 
-    use crate::mqtt::{MqttConnectionStatus, MqttRuntime};
+    use crate::{live::ConnectionStatus, mqtt::MqttRuntime};
 
     use super::{handle_publish, ReportEvent};
 
@@ -182,18 +182,18 @@ mod tests {
 
         handle_publish(&runtime, &allowed(&["printer-a"]), report_event(true)).await;
 
-        let snapshot = runtime.snapshot().await;
+        let snapshot = runtime.live_snapshot().await;
         assert!(!snapshot.devices.contains_key("printer-a"));
         assert_eq!(
             snapshot.connections.get("printer-a").unwrap().status,
-            MqttConnectionStatus::Connecting
+            ConnectionStatus::Connecting
         );
 
         handle_publish(&runtime, &allowed(&["printer-a"]), report_event(false)).await;
 
-        let snapshot = runtime.snapshot().await;
+        let snapshot = runtime.live_snapshot().await;
         let state = snapshot.devices.get("printer-a").unwrap();
-        assert_eq!(state.connection.status, MqttConnectionStatus::Connected);
+        assert_eq!(state.connection.status, ConnectionStatus::Connected);
         assert!(state.is_active_task());
     }
 
@@ -216,7 +216,7 @@ mod tests {
         )
         .await;
 
-        let snapshot = runtime.snapshot().await;
+        let snapshot = runtime.live_snapshot().await;
         assert!(!snapshot.devices.contains_key("printer-b"));
     }
 }

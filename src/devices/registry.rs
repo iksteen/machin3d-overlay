@@ -13,7 +13,8 @@
 use std::collections::{HashMap, HashSet};
 
 use crate::{
-    bambu::{CloudDevice, PrinterStatus},
+    bambu::{printer_status_to_live, CloudDevice},
+    live::PrinterReport,
     local::LocalDevice,
     secret::Secret,
     video::VideoEndpoint,
@@ -31,7 +32,7 @@ pub(crate) struct KnownDevice {
     pub(crate) id: String,
     pub(crate) name: Option<String>,
     pub(crate) online: Option<bool>,
-    pub(crate) status: PrinterStatus,
+    pub(crate) status: PrinterReport,
 }
 
 impl KnownDevice {
@@ -40,7 +41,7 @@ impl KnownDevice {
             id: non_empty_string(device.id)?,
             name: device.name,
             online: device.online,
-            status: device.status,
+            status: printer_status_to_live(&device.status),
         })
     }
 
@@ -49,7 +50,7 @@ impl KnownDevice {
             id: device.id.clone(),
             name: device.endpoint.name.clone(),
             online: Some(true),
-            status: PrinterStatus::default(),
+            status: PrinterReport::default(),
         }
     }
 }

@@ -441,7 +441,10 @@ mod tests {
 
     use super::{JobCompletion, JobId, JobOrder, JobStart, TaskKey, ThumbnailJob, ThumbnailJobState};
     use crate::bambu::PrinterStatus;
-    use crate::mqtt::{MqttConnectionStatus, MqttDeviceConnection, MqttDeviceState};
+    use crate::{
+        live::{ConnectionStatus, DeviceConnection},
+        mqtt::MqttDeviceState,
+    };
     use crate::thumbnail::{ThumbnailImage, ThumbnailStatus};
 
     #[test]
@@ -482,9 +485,9 @@ mod tests {
                 ..PrinterStatus::default()
             },
             None,
-            MqttDeviceConnection {
+            DeviceConnection {
                 key: Some("printer-a".to_owned()),
-                status: MqttConnectionStatus::Disconnected,
+                status: ConnectionStatus::Disconnected,
                 error: Some("disconnected".to_owned()),
             },
         );

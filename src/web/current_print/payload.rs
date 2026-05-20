@@ -7,7 +7,8 @@ use chrono::Utc;
 use serde::Serialize;
 
 use crate::{
-    device_summary::{DeviceSummary, Material, TaskSource},
+    device_summary::{DeviceSummary, TaskSource},
+    live::Material,
     mqtt::MqttStatusPayload,
 };
 
@@ -229,8 +230,9 @@ fn parse_bambu_datetime(text: &str) -> Option<chrono::DateTime<Utc>> {
 #[cfg(test)]
 mod tests {
     use crate::{
-        device_summary::{DeviceSummary, Material, TaskSource},
-        mqtt::{MqttConnectionStatus, MqttStatusPayload},
+        device_summary::{DeviceSummary, TaskSource},
+        live::{ConnectionStatus, Material},
+        mqtt::MqttStatusPayload,
     };
 
     use super::CurrentPrintPayload;
@@ -247,7 +249,7 @@ mod tests {
                 id: "printer-a".to_owned(),
                 name: "Office X1".to_owned(),
                 online: true,
-                service_status: MqttConnectionStatus::Connected,
+                service_status: ConnectionStatus::Connected,
                 service_connected: true,
                 is_printing: true,
                 title: Some("Calibration cube".to_owned()),

@@ -6,6 +6,7 @@ pub(crate) mod cloud;
 pub(crate) mod device_summary;
 pub(crate) mod device_tls;
 pub(crate) mod devices;
+pub(crate) mod live;
 pub(crate) mod local;
 pub(crate) mod monitor;
 pub(crate) mod mqtt;

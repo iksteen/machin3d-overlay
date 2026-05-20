@@ -1,6 +1,5 @@
 use std::collections::HashMap;
 
-mod material;
 mod snapshot;
 
 #[cfg(test)]
@@ -8,10 +7,8 @@ mod tests;
 
 use crate::{
     devices::KnownDevice,
-    mqtt::{MqttConnectionStatus, MqttDeviceConnection, MqttDeviceState},
+    live::{ConnectionStatus, DeviceConnection, DeviceLiveState, Material},
 };
-
-pub(crate) use material::Material;
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub(crate) enum TaskSource {
@@ -24,7 +21,7 @@ pub(crate) struct DeviceSummary {
     pub(crate) id: String,
     pub(crate) name: String,
     pub(crate) online: bool,
-    pub(crate) service_status: MqttConnectionStatus,
+    pub(crate) service_status: ConnectionStatus,
     pub(crate) service_connected: bool,
     pub(crate) service_error: Option<String>,
     pub(crate) task_name: Option<String>,
@@ -51,8 +48,8 @@ pub(crate) struct DeviceSummary {
 
 pub(crate) fn summarize_devices<'a>(
     devices: impl IntoIterator<Item = &'a KnownDevice>,
-    states: &HashMap<String, MqttDeviceState>,
-    connections: &HashMap<String, MqttDeviceConnection>,
+    states: &HashMap<String, DeviceLiveState>,
+    connections: &HashMap<String, DeviceConnection>,
 ) -> Vec<DeviceSummary> {
     devices
         .into_iter()

@@ -4,9 +4,9 @@ use serde::de::DeserializeOwned;
 use serde_json::{json, Value};
 
 use crate::{
-    bambu::{CloudDevice, PrinterStatus},
+    bambu::{printer_status_to_live, CloudDevice, PrinterStatus},
     devices::KnownDevice,
-    mqtt::{MqttConnectionStatus, MqttDeviceConnection, MqttDeviceState},
+    live::{ConnectionStatus, DeviceConnection, DeviceLiveState},
 };
 
 use super::{summarize_devices, TaskSource};
@@ -19,17 +19,17 @@ fn device(value: Value) -> KnownDevice {
     KnownDevice::from_cloud(decode::<CloudDevice>(value)).expect("device should have an ID")
 }
 
-fn live(value: Value) -> MqttDeviceState {
-    MqttDeviceState::from_report(decode::<PrinterStatus>(value))
+fn live(value: Value) -> DeviceLiveState {
+    DeviceLiveState::from_report(printer_status_to_live(&decode::<PrinterStatus>(value)))
 }
 
-fn stale_live(value: Value) -> MqttDeviceState {
-    MqttDeviceState::from_snapshot(
-        decode::<PrinterStatus>(value),
+fn stale_live(value: Value) -> DeviceLiveState {
+    DeviceLiveState::from_snapshot(
+        printer_status_to_live(&decode::<PrinterStatus>(value)),
         None,
-        MqttDeviceConnection {
+        DeviceConnection {
             key: Some("cloud".to_owned()),
-            status: MqttConnectionStatus::Disconnected,
+            status: ConnectionStatus::Disconnected,
             error: Some("disconnected".to_owned()),
         },
     )
@@ -64,7 +64,7 @@ fn summarize_devices_uses_matching_mqtt_report_fields_only() {
 
     let summaries = summarize_devices(&devices, &states, &HashMap::new());
 
-    assert_eq!(summaries[0].service_status, MqttConnectionStatus::Connected);
+    assert_eq!(summaries[0].service_status, ConnectionStatus::Connected);
     assert!(summaries[0].service_connected);
     assert_eq!(summaries[0].progress, Some(42.0));
     assert_eq!(summaries[0].toolhead_temperature, Some(210.0));
@@ -194,9 +194,9 @@ fn summarize_devices_uses_registered_connecting_connection_without_report() {
     }))];
     let connections = HashMap::from([(
         "printer-a".to_owned(),
-        MqttDeviceConnection {
+        DeviceConnection {
             key: Some("cloud".to_owned()),
-            status: MqttConnectionStatus::Connecting,
+            status: ConnectionStatus::Connecting,
             error: None,
         },
     )]);
@@ -206,7 +206,7 @@ fn summarize_devices_uses_registered_connecting_connection_without_report() {
         .next()
         .unwrap();
 
-    assert_eq!(summary.service_status, MqttConnectionStatus::Connecting);
+    assert_eq!(summary.service_status, ConnectionStatus::Connecting);
     assert!(!summary.service_connected);
     assert_eq!(summary.service_error, None);
     assert!(!summary.is_printing);
@@ -308,7 +308,7 @@ fn summarize_devices_ignores_stale_mqtt_reports() {
         .next()
         .unwrap();
 
-    assert_eq!(summary.service_status, MqttConnectionStatus::Disconnected);
+    assert_eq!(summary.service_status, ConnectionStatus::Disconnected);
     assert!(!summary.service_connected);
     assert_eq!(summary.service_error.as_deref(), Some("disconnected"));
     assert!(!summary.is_printing);
