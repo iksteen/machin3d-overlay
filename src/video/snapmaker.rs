@@ -1,10 +1,12 @@
 //! Snapmaker / Klipper camera worker.
 //!
-//! The U1 exposes the latest camera frame as a static JPEG at
-//! `/server/files/camera/monitor.jpg`. The file is rewritten in place when a
-//! new frame is available; the response includes `Last-Modified`, so we poll
-//! with `If-Modified-Since` and only forward bytes when the frame actually
-//! changed.
+//! The U1 only writes frames to `/server/files/camera/monitor.jpg` while
+//! "monitor" mode is active — by default the file is frozen on the last
+//! captured frame. We wake the camera by calling `camera.start_monitor` over
+//! Moonraker's JSON-RPC-over-WebSocket (an `~HTTP` endpoint), then poll the
+//! JPEG with `If-Modified-Since` so only freshly-written frames are
+//! forwarded. When the last subscriber disconnects we send
+//! `camera.stop_monitor` so the camera daemon can shut down again.
 
 use std::{
     sync::{atomic::Ordering, Arc},
@@ -13,9 +15,15 @@ use std::{
 
 use anyhow::{Context, Result};
 use bytes::Bytes;
+use futures_util::{SinkExt, StreamExt};
 use reqwest::header::{IF_MODIFIED_SINCE, LAST_MODIFIED};
+use serde_json::json;
 use tokio::time::sleep;
-use tracing::warn;
+use tokio_tungstenite::{
+    connect_async,
+    tungstenite::{client::IntoClientRequest, Message},
+};
+use tracing::{debug, warn};
 
 use crate::snapmaker::SnapmakerEndpoint;
 
@@ -25,6 +33,11 @@ const POLL_INTERVAL: Duration = Duration::from_millis(250);
 const POLL_TIMEOUT: Duration = Duration::from_secs(8);
 const RETRY_INITIAL_DELAY: Duration = Duration::from_secs(2);
 const RETRY_MAX_DELAY: Duration = Duration::from_secs(30);
+/// The `domain` parameter is used by Snapmaker's camera daemon to track which
+/// client requested the monitor mode. A unique value keeps stop requests from
+/// other clients (e.g. Snapmaker Orca) from killing our stream and vice
+/// versa.
+const MONITOR_DOMAIN: &str = "bambu-overlay";
 
 pub(super) async fn run_snapmaker_stream_worker(
     endpoint: SnapmakerEndpoint,
@@ -46,6 +59,17 @@ pub(super) async fn run_snapmaker_stream_worker(
             return;
         }
     };
+
+    if let Err(error) = control_camera(&endpoint, "camera.start_monitor").await {
+        warn!(
+            device_id = %stream.device_id,
+            error = %error_chain(&error),
+            "Snapmaker camera start_monitor failed; falling back to passive poll"
+        );
+    } else {
+        debug!(device_id = %stream.device_id, "Snapmaker camera monitor started");
+    }
+
     let mut delay = RETRY_INITIAL_DELAY;
     let mut last_modified: Option<String> = None;
 
@@ -75,6 +99,58 @@ pub(super) async fn run_snapmaker_stream_worker(
             }
         }
     }
+
+    if let Err(error) = control_camera(&endpoint, "camera.stop_monitor").await {
+        warn!(
+            device_id = %stream.device_id,
+            error = %error_chain(&error),
+            "Snapmaker camera stop_monitor failed"
+        );
+    }
+}
+
+/// Send a one-shot Moonraker JSON-RPC request to start or stop monitor mode.
+/// The response comes back asynchronously over an internal MQTT bus, so we
+/// don't try to await it — the request being accepted by the repeater
+/// endpoint is enough.
+async fn control_camera(endpoint: &SnapmakerEndpoint, method: &str) -> Result<()> {
+    let url = format!(
+        "ws://{host}:{port}/websocket",
+        host = endpoint.host,
+        port = endpoint.port,
+    );
+    let request = url
+        .as_str()
+        .into_client_request()
+        .with_context(|| format!("invalid Moonraker WebSocket URL `{url}`"))?;
+    let (mut socket, _response) = connect_async(request)
+        .await
+        .with_context(|| format!("failed to connect to Moonraker at {url} for camera control"))?;
+    let req_id: i64 = 1;
+    let payload = json!({
+        "jsonrpc": "2.0",
+        "method": method,
+        "params": {
+            "req_id": req_id,
+            "domain": MONITOR_DOMAIN,
+            "interval": 0,
+            "expect_pw": false,
+        },
+        "id": req_id,
+    });
+    socket
+        .send(Message::Text(payload.to_string()))
+        .await
+        .with_context(|| format!("failed to send Moonraker `{method}` request"))?;
+    // Drain a few messages so the send actually flushes before we close.
+    for _ in 0..5 {
+        match tokio::time::timeout(Duration::from_millis(500), socket.next()).await {
+            Ok(Some(Ok(_))) => continue,
+            _ => break,
+        }
+    }
+    let _ = socket.close(None).await;
+    Ok(())
 }
 
 struct PollOutcome {
