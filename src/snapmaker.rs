@@ -10,7 +10,9 @@ pub(crate) mod backend;
 mod config;
 mod device;
 mod moonraker;
+mod probe;
 mod report;
 
 pub(crate) use config::SnapmakerDeviceConfig;
 pub(crate) use device::{SnapmakerDevice, SnapmakerEndpoint};
+pub(crate) use probe::probe_system_info;

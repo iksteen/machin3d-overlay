@@ -7,7 +7,7 @@ use tracing::info;
 use crate::{
     cloud::{bound_cloud_devices, explicit_cloud_devices, CloudSession},
     local::{infer_local_device_id, LocalDevice, LocalEndpointConfig},
-    snapmaker::{SnapmakerDevice, SnapmakerDeviceConfig},
+    snapmaker::{probe_system_info, SnapmakerDevice, SnapmakerDeviceConfig},
     video::VideoEndpoint,
 };
 
@@ -28,7 +28,6 @@ pub(crate) async fn resolve_devices(
     snapmaker_configs: &[SnapmakerDeviceConfig],
 ) -> Result<DeviceRegistry> {
     ensure_unique_cloud_configs(cloud_configs)?;
-    let snapmaker_devices = ensure_unique_snapmaker(snapmaker_configs)?;
     let explicit_video = ExplicitVideoEndpoints::resolve(video_endpoints).await?;
     let enumerate_cloud_catalog = should_enumerate_cloud_catalog(
         cloud.is_some(),
@@ -46,6 +45,7 @@ pub(crate) async fn resolve_devices(
         enumerate_cloud_catalog.then(|| cloud_devices.clone()),
     );
     let local = resolve_local_devices(local_configs, &explicit_video, &mut bind_catalog).await?;
+    let snapmaker_devices = resolve_snapmaker_devices(snapmaker_configs).await?;
 
     let mut builder = DeviceRegistryBuilder::new(cloud_devices, local, snapmaker_devices);
     explicit_video.attach(&mut builder, &mut bind_catalog).await?;
@@ -59,15 +59,55 @@ pub(crate) async fn resolve_devices(
     Ok(registry)
 }
 
-fn ensure_unique_snapmaker(configs: &[SnapmakerDeviceConfig]) -> Result<Vec<SnapmakerDevice>> {
+async fn resolve_snapmaker_devices(
+    configs: &[SnapmakerDeviceConfig],
+) -> Result<Vec<SnapmakerDevice>> {
+    let semaphore = Arc::new(Semaphore::new(STARTUP_PROBE_CONCURRENCY));
+    let mut probes = JoinSet::new();
+    for (index, config) in configs.iter().cloned().enumerate() {
+        let semaphore = Arc::clone(&semaphore);
+        probes.spawn(async move {
+            let _permit = semaphore
+                .acquire_owned()
+                .await
+                .context("Snapmaker probe concurrency limiter closed")?;
+            let info = probe_system_info(&config.endpoint).await.with_context(|| {
+                format!(
+                    "could not discover Snapmaker serial for --snap-device `{}`",
+                    config.endpoint
+                )
+            })?;
+            Ok::<_, anyhow::Error>((
+                index,
+                SnapmakerDevice {
+                    serial: info.serial,
+                    endpoint: config.endpoint,
+                    name: info.name,
+                },
+            ))
+        });
+    }
+
+    let mut discovered: Vec<Option<SnapmakerDevice>> = (0..configs.len()).map(|_| None).collect();
+    while let Some(result) = probes.join_next().await {
+        let (index, device) = result.context("Snapmaker probe task failed")??;
+        info!(
+            device_id = %device.serial,
+            endpoint = %device.endpoint,
+            "discovered Snapmaker device"
+        );
+        discovered[index] = Some(device);
+    }
     let mut seen = HashSet::new();
     let mut devices = Vec::with_capacity(configs.len());
-    for config in configs {
-        let serial = config.device.serial.trim();
-        if !seen.insert(serial.to_owned()) {
-            anyhow::bail!("--snap-device specified duplicate serial `{serial}`");
+    for device in discovered.into_iter().flatten() {
+        if !seen.insert(device.serial.clone()) {
+            anyhow::bail!(
+                "--snap-device endpoints resolve to duplicate serial `{}`",
+                device.serial
+            );
         }
-        devices.push(config.device.clone());
+        devices.push(device);
     }
     Ok(devices)
 }
@@ -268,7 +308,7 @@ mod tests {
             true,
             &[],
             &[],
-            &["U1=192.168.0.120".parse().unwrap()],
+            &["192.168.0.120".parse().unwrap()],
         ));
     }
 

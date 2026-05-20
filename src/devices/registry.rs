@@ -59,7 +59,7 @@ impl KnownDevice {
     pub(crate) fn from_snapmaker(device: &SnapmakerDevice) -> Self {
         Self {
             id: device.serial.clone(),
-            name: None,
+            name: device.name.clone(),
             online: Some(true),
             status: PrinterReport::default(),
         }

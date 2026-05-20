@@ -150,15 +150,16 @@ Select a local printer the same way as cloud printers:
 Snapmaker U1). Add each printer with `--snap-device`:
 
 ```sh
-bambu-overlay serve --snap-device <SERIAL>=<HOST[:PORT]>
+bambu-overlay serve --snap-device <HOST[:PORT]>
 ```
 
-`SERIAL` is the printer's stable id — the `serial_number` reported by
-Moonraker's `machine/system_info`. `HOST` is the printer's LAN address; `PORT`
-defaults to `80` (Moonraker proxied through nginx). Repeat `--snap-device` for
-multiple printers. Each entry spawns a Moonraker WebSocket worker that
-subscribes to `print_stats`, `display_status`, `extruder[0..3]`, `heater_bed`,
-`virtual_sdcard`, and `print_task_config`, and feeds the shared overlay state.
+`HOST` is the printer's LAN address; `PORT` defaults to `80` (Moonraker proxied
+through nginx). Startup probes `http://HOST:PORT/machine/system_info` to learn
+the printer's serial number (used as the device id) and its friendly name.
+Repeat `--snap-device` for multiple printers. Each entry spawns a Moonraker
+WebSocket worker that subscribes to `print_stats`, `display_status`,
+`extruder[0..3]`, `heater_bed`, `virtual_sdcard`, and `print_task_config`, and
+feeds the shared overlay state.
 
 Snapmaker support in this release covers state only: print progress, layer
 counts, temperatures, and the active tool. Video and thumbnails arrive in a

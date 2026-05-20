@@ -120,8 +120,8 @@ struct ServeArgs {
     video_devices: Vec<VideoEndpoint>,
     #[arg(
         long = "snap-device",
-        value_name = "SERIAL=HOST[:PORT]",
-        help = "Snapmaker printer reachable over Moonraker; repeat for multiple printers. Port defaults to 80. SERIAL is the printer's stable id (e.g. the serial number from machine/system_info)",
+        value_name = "HOST[:PORT]",
+        help = "Snapmaker printer reachable over Moonraker; repeat for multiple printers. Port defaults to 80. Startup probes machine/system_info to discover the serial number used as the device id",
         help_heading = "Snapmaker"
     )]
     snapmaker_devices: Vec<SnapmakerDeviceConfig>,
