@@ -1,23 +1,29 @@
 use std::{collections::HashMap, time::Instant};
 
-use crate::{bambu::PrinterStatus, mqtt::MqttDeviceState};
+use crate::{bambu::PrinterStatus, mqtt::MqttDeviceState, snapmaker::SnapmakerEndpoint};
 
 use super::{trimmed, ThumbnailStatus};
 
 /// Identifies the active print task on a device. Two thumbnail jobs with the
 /// same `TaskKey` are about the same print job; jobs with different keys are
-/// for distinct prints. The key combines task id, filename, task name, start
-/// time, and print type so that any change to the active print invalidates
-/// cached state and schedules a fresh thumbnail fetch.
+/// for distinct prints. The shape of the key is per-vendor — Bambu folds
+/// together task id, filename, task name, start time, and print type while
+/// Snapmaker only has a filename to key by — but the cache only cares about
+/// equality, not parsing.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) struct TaskKey(String);
 
 impl TaskKey {
-    pub(super) fn from_state(state: &MqttDeviceState) -> Option<Self> {
+    pub(super) fn from_bambu_state(state: &MqttDeviceState) -> Option<Self> {
         state
             .is_active_task()
-            .then(|| Self::from_report(&state.report))
+            .then(|| Self::from_bambu_report(&state.report))
             .flatten()
+    }
+
+    pub(super) fn from_snapmaker_filename(filename: &str) -> Option<Self> {
+        let filename = trimmed(Some(filename))?;
+        Some(Self(format!("snapmaker\u{0}{filename}")))
     }
 
     #[cfg(test)]
@@ -25,7 +31,7 @@ impl TaskKey {
         Self(value.to_owned())
     }
 
-    fn from_report(report: &PrinterStatus) -> Option<Self> {
+    fn from_bambu_report(report: &PrinterStatus) -> Option<Self> {
         let task_id = trimmed(report.task_id.as_deref());
         let filename = trimmed(report.filename.as_deref());
         let task_name = trimmed(report.task_name.as_deref());
@@ -34,7 +40,7 @@ impl TaskKey {
         }
 
         Some(Self(format!(
-            "{}\u{0}{}\u{0}{}\u{0}{}\u{0}{}",
+            "bambu\u{0}{}\u{0}{}\u{0}{}\u{0}{}\u{0}{}",
             task_id.unwrap_or_default(),
             filename.unwrap_or_default(),
             task_name.unwrap_or_default(),
@@ -44,11 +50,27 @@ impl TaskKey {
     }
 }
 
+/// Per-vendor data captured at schedule time and consumed by the fetcher.
+#[derive(Clone, Debug)]
+pub(super) enum FetchContext {
+    Bambu(Box<PrinterStatus>),
+    Snapmaker {
+        endpoint: SnapmakerEndpoint,
+        filename: String,
+    },
+}
+
+impl FetchContext {
+    pub(super) fn bambu(report: PrinterStatus) -> Self {
+        Self::Bambu(Box::new(report))
+    }
+}
+
 #[derive(Clone, Debug)]
 pub(super) struct ThumbnailJob {
     pub(super) device_id: String,
     pub(super) task: TaskKey,
-    pub(super) report: PrinterStatus,
+    pub(super) context: FetchContext,
     pub(super) order: JobOrder,
     id: JobId,
 }
@@ -409,14 +431,14 @@ impl ThumbnailJob {
     pub(super) fn new(
         device_id: String,
         task: TaskKey,
-        report: PrinterStatus,
+        context: FetchContext,
         order: JobOrder,
         id: JobId,
     ) -> Self {
         Self {
             device_id,
             task,
-            report,
+            context,
             order,
             id,
         }
@@ -439,13 +461,16 @@ impl JobId {
 mod tests {
     use bytes::Bytes;
 
-    use super::{JobCompletion, JobId, JobOrder, JobStart, TaskKey, ThumbnailJob, ThumbnailJobState};
+    use super::{
+        FetchContext, JobCompletion, JobId, JobOrder, JobStart, TaskKey, ThumbnailJob,
+        ThumbnailJobState,
+    };
     use crate::bambu::PrinterStatus;
+    use crate::thumbnail::{ThumbnailImage, ThumbnailStatus};
     use crate::{
         live::{ConnectionStatus, DeviceConnection},
         mqtt::MqttDeviceState,
     };
-    use crate::thumbnail::{ThumbnailImage, ThumbnailStatus};
 
     #[test]
     fn task_key_tracks_the_active_print_identity() {
@@ -457,8 +482,8 @@ mod tests {
             ..PrinterStatus::default()
         };
 
-        assert!(TaskKey::from_report(&report).is_some());
-        assert_eq!(TaskKey::from_report(&PrinterStatus::default()), None);
+        assert!(TaskKey::from_bambu_report(&report).is_some());
+        assert_eq!(TaskKey::from_bambu_report(&PrinterStatus::default()), None);
     }
 
     #[test]
@@ -471,7 +496,7 @@ mod tests {
             ..PrinterStatus::default()
         });
 
-        assert_eq!(TaskKey::from_state(&state), None);
+        assert_eq!(TaskKey::from_bambu_state(&state), None);
     }
 
     #[test]
@@ -492,7 +517,20 @@ mod tests {
             },
         );
 
-        assert_eq!(TaskKey::from_state(&state), None);
+        assert_eq!(TaskKey::from_bambu_state(&state), None);
+    }
+
+    #[test]
+    fn snapmaker_task_key_uses_filename() {
+        assert_eq!(TaskKey::from_snapmaker_filename("   "), None);
+        assert_ne!(
+            TaskKey::from_snapmaker_filename("Cube.gcode"),
+            TaskKey::from_snapmaker_filename("Sphere.gcode")
+        );
+        assert_eq!(
+            TaskKey::from_snapmaker_filename("Cube.gcode"),
+            TaskKey::from_snapmaker_filename(" Cube.gcode ")
+        );
     }
 
     struct TestJobs {
@@ -532,7 +570,7 @@ mod tests {
             self.state.schedule(ThumbnailJob::new(
                 device_id.to_owned(),
                 task.clone(),
-                PrinterStatus::default(),
+                FetchContext::bambu(PrinterStatus::default()),
                 order,
                 id,
             ))

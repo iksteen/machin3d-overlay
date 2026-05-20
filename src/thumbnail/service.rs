@@ -10,41 +10,46 @@ use tokio::task::{Id, JoinError, JoinSet};
 use tracing::{debug, error, warn};
 
 use crate::{
-    bambu::PrinterStatus,
+    backend::Backend,
     cloud::CloudSession,
     devices::DeviceRegistry,
     live::LiveStateStore,
-    mqtt::{MqttDeviceState, MqttRuntime},
+    mqtt::MqttRuntime,
     service::ShutdownReceiver,
 };
 
 use super::{
     cloud as cloud_source, error_chain,
-    job_state::TaskKey,
+    job_state::{FetchContext, TaskKey},
     jobs::{JobCompletion, JobOrder, JobStart, ThumbnailJob, ThumbnailJobs},
-    local as local_source, ThumbnailStatus,
+    local as local_source, snapmaker as snapmaker_source, ThumbnailStatus,
 };
 
 async fn fetch_thumbnail(
     cloud: Option<&CloudSession>,
     registry: &DeviceRegistry,
     device_id: &str,
-    report: &PrinterStatus,
+    context: &FetchContext,
 ) -> Result<ThumbnailStatus> {
-    let entry = registry
-        .get(device_id)
-        .with_context(|| format!("device `{device_id}` is not known"))?;
-
-    if let Some(local) = entry.local() {
-        return local_source::fetch_thumbnail(device_id, local, report).await;
+    match context {
+        FetchContext::Bambu(report) => {
+            let entry = registry
+                .get(device_id)
+                .with_context(|| format!("device `{device_id}` is not known"))?;
+            if let Some(local) = entry.local() {
+                return local_source::fetch_thumbnail(device_id, local, report).await;
+            }
+            if entry.has_cloud_mqtt() {
+                return cloud_source::fetch_thumbnail(cloud, device_id, report)
+                    .await
+                    .map(ThumbnailStatus::Ready);
+            }
+            anyhow::bail!("device `{device_id}` has no Bambu thumbnail data source")
+        }
+        FetchContext::Snapmaker { endpoint, filename } => {
+            snapmaker_source::fetch_thumbnail(endpoint, filename).await
+        }
     }
-    if entry.has_cloud_mqtt() {
-        return cloud_source::fetch_thumbnail(cloud, device_id, report)
-            .await
-            .map(ThumbnailStatus::Ready);
-    }
-
-    anyhow::bail!("device `{device_id}` has no thumbnail data source")
 }
 
 const LOADING_RETRY_DELAY: Duration = Duration::from_secs(2);
@@ -136,14 +141,26 @@ impl ThumbnailService {
     }
 
     async fn refresh_changed_devices(&self) {
-        let snapshot = self.inner.mqtt.snapshot().await;
-        let order = JobOrder::new(snapshot.revision);
-        for device in self.inner.registry.devices() {
-            let device_id = device.id.as_str();
-            if let Err(error) = self
-                .refresh_snapshot_device(device_id, snapshot.devices.get(device_id), order)
-                .await
-            {
+        let mqtt_snapshot = self.inner.mqtt.snapshot().await;
+        let live_snapshot = self.inner.live.snapshot().await;
+        let order = JobOrder::new(mqtt_snapshot.revision);
+        for entry in self.inner.registry.entries() {
+            let device_id = entry.id();
+            let refresh = match entry.backend() {
+                Backend::Bambu => self
+                    .refresh_bambu_device(device_id, mqtt_snapshot.devices.get(device_id), order)
+                    .await,
+                Backend::Snapmaker => {
+                    self.refresh_snapmaker_device(
+                        device_id,
+                        entry.snapmaker_endpoint(),
+                        live_snapshot.devices.get(device_id),
+                        order,
+                    )
+                    .await
+                }
+            };
+            if let Err(error) = refresh {
                 warn!(
                     device_id,
                     error = %error_chain(&error),
@@ -154,44 +171,104 @@ impl ThumbnailService {
     }
 
     async fn refresh_device(&self, device_id: &str) -> Result<()> {
-        let snapshot = self.inner.mqtt.snapshot().await;
-        self.refresh_snapshot_device(
-            device_id,
-            snapshot.devices.get(device_id),
-            JobOrder::new(snapshot.revision),
-        )
-        .await
+        let Some(entry) = self.inner.registry.get(device_id) else {
+            return Ok(());
+        };
+        let mqtt_snapshot = self.inner.mqtt.snapshot().await;
+        let order = JobOrder::new(mqtt_snapshot.revision);
+        match entry.backend() {
+            Backend::Bambu => {
+                self.refresh_bambu_device(device_id, mqtt_snapshot.devices.get(device_id), order)
+                    .await
+            }
+            Backend::Snapmaker => {
+                let live_snapshot = self.inner.live.snapshot().await;
+                self.refresh_snapmaker_device(
+                    device_id,
+                    entry.snapmaker_endpoint(),
+                    live_snapshot.devices.get(device_id),
+                    order,
+                )
+                .await
+            }
+        }
     }
 
-    async fn refresh_snapshot_device(
+    async fn refresh_bambu_device(
         &self,
         device_id: &str,
-        state: Option<&MqttDeviceState>,
+        state: Option<&crate::mqtt::MqttDeviceState>,
         order: JobOrder,
     ) -> Result<()> {
         let Some(state) = state else {
             self.inner.jobs.clear(device_id, order).await;
             return Ok(());
         };
-        let Some(task) = TaskKey::from_state(state) else {
+        let Some(task) = TaskKey::from_bambu_state(state) else {
             self.inner.jobs.clear(device_id, order).await;
             return Ok(());
         };
-        self.schedule_fetch(device_id, &state.report, task, order)
-            .await
+        self.schedule_fetch(
+            device_id,
+            FetchContext::bambu(state.report.clone()),
+            task,
+            order,
+        )
+        .await
+    }
+
+    async fn refresh_snapmaker_device(
+        &self,
+        device_id: &str,
+        endpoint: Option<&crate::snapmaker::SnapmakerEndpoint>,
+        state: Option<&crate::live::DeviceLiveState>,
+        order: JobOrder,
+    ) -> Result<()> {
+        let Some(endpoint) = endpoint else {
+            self.inner.jobs.clear(device_id, order).await;
+            return Ok(());
+        };
+        let Some(state) = state.filter(|state| state.is_active_task()) else {
+            self.inner.jobs.clear(device_id, order).await;
+            return Ok(());
+        };
+        let Some(filename) = state
+            .report
+            .filename
+            .as_deref()
+            .map(str::trim)
+            .filter(|filename| !filename.is_empty())
+        else {
+            self.inner.jobs.clear(device_id, order).await;
+            return Ok(());
+        };
+        let Some(task) = TaskKey::from_snapmaker_filename(filename) else {
+            self.inner.jobs.clear(device_id, order).await;
+            return Ok(());
+        };
+        self.schedule_fetch(
+            device_id,
+            FetchContext::Snapmaker {
+                endpoint: endpoint.clone(),
+                filename: filename.to_owned(),
+            },
+            task,
+            order,
+        )
+        .await
     }
 
     async fn schedule_fetch(
         &self,
         device_id: &str,
-        report: &PrinterStatus,
+        context: FetchContext,
         task: TaskKey,
         order: JobOrder,
     ) -> Result<()> {
         let scheduled = self
             .inner
             .jobs
-            .schedule(device_id.to_owned(), task, report.clone(), order)
+            .schedule(device_id.to_owned(), task, context, order)
             .await;
         if let Some(job) = scheduled {
             self.enqueue_job(device_id, job).await
@@ -224,7 +301,7 @@ impl ThumbnailService {
             self.inner.cloud.as_ref(),
             &self.inner.registry,
             device_id,
-            &job.report,
+            &job.context,
         )
         .await
         {

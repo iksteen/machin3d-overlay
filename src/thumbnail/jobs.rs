@@ -10,9 +10,7 @@ use tokio::sync::{
 };
 use tracing::debug;
 
-use crate::bambu::PrinterStatus;
-
-pub(super) use super::job_state::{JobCompletion, JobOrder, JobStart, ThumbnailJob};
+pub(super) use super::job_state::{FetchContext, JobCompletion, JobOrder, JobStart, ThumbnailJob};
 use super::{
     job_state::{JobId, TaskKey, ThumbnailJobState},
     ThumbnailStatus,
@@ -62,10 +60,10 @@ impl ThumbnailJobs {
         &self,
         device_id: String,
         task: TaskKey,
-        report: PrinterStatus,
+        context: FetchContext,
         order: JobOrder,
     ) -> Option<ThumbnailJob> {
-        let job = ThumbnailJob::new(device_id, task, report, order, self.next_id());
+        let job = ThumbnailJob::new(device_id, task, context, order, self.next_id());
         let mut state = self.state.lock().await;
         state.schedule(job)
     }

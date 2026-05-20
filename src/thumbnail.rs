@@ -4,6 +4,7 @@ mod job_state;
 mod jobs;
 mod local;
 mod service;
+mod snapmaker;
 
 use std::io::Read;
 
