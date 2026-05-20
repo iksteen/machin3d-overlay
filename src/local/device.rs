@@ -10,8 +10,8 @@ use super::{Endpoint, LocalEndpointConfig};
 const LOCAL_MQTT_PROBE_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// Reads the printer's device ID (serial number) from its MQTT-over-TLS
-/// certificate common name. Used at startup so `--local-device` does not need
-/// the operator to provide the device ID.
+/// certificate common name. Used at startup so `--bbl-local-device` does not
+/// need the operator to provide the device ID.
 pub async fn infer_local_device_id(device: &LocalEndpointConfig) -> Result<String> {
     let endpoint = device.endpoint();
     let address = endpoint.to_string();

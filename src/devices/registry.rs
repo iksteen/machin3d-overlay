@@ -18,6 +18,7 @@ use crate::{
     live::PrinterReport,
     local::LocalDevice,
     secret::Secret,
+    snapmaker::{SnapmakerDevice, SnapmakerEndpoint},
     video::VideoEndpoint,
 };
 use tracing::warn;
@@ -54,6 +55,15 @@ impl KnownDevice {
             status: PrinterReport::default(),
         }
     }
+
+    pub(crate) fn from_snapmaker(device: &SnapmakerDevice) -> Self {
+        Self {
+            id: device.serial.clone(),
+            name: None,
+            online: Some(true),
+            status: PrinterReport::default(),
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -74,6 +84,7 @@ struct DeviceCapabilities {
     cloud_mqtt: bool,
     local_mqtt: Option<LocalDevice>,
     explicit_video: Option<VideoEndpoint>,
+    snapmaker_endpoint: Option<SnapmakerEndpoint>,
 }
 
 #[derive(Debug, Clone)]
@@ -107,6 +118,18 @@ impl DeviceEntry {
                 ..DeviceCapabilities::default()
             },
             backend: Backend::Bambu,
+        }
+    }
+
+    fn from_snapmaker(device: SnapmakerDevice) -> Self {
+        Self {
+            device: KnownDevice::from_snapmaker(&device),
+            credentials: DeviceCredentials::default(),
+            capabilities: DeviceCapabilities {
+                snapmaker_endpoint: Some(device.endpoint),
+                ..DeviceCapabilities::default()
+            },
+            backend: Backend::Snapmaker,
         }
     }
 
@@ -163,6 +186,10 @@ impl DeviceEntry {
         self.capabilities.local_mqtt.as_ref()
     }
 
+    pub(crate) fn snapmaker_endpoint(&self) -> Option<&SnapmakerEndpoint> {
+        self.capabilities.snapmaker_endpoint.as_ref()
+    }
+
     pub(crate) fn explicit_video(&self) -> Option<&VideoEndpoint> {
         self.capabilities.explicit_video.as_ref()
     }
@@ -188,7 +215,7 @@ impl DeviceRegistry {
     /// the registry is frozen.
     #[cfg(test)]
     pub(crate) fn new(cloud_devices: Vec<CloudDevice>, local_devices: Vec<LocalDevice>) -> Self {
-        DeviceRegistryBuilder::new(cloud_devices, local_devices).build()
+        DeviceRegistryBuilder::new(cloud_devices, local_devices, Vec::new()).build()
     }
 
     pub(crate) fn is_empty(&self) -> bool {
@@ -222,7 +249,11 @@ impl DeviceRegistry {
 }
 
 impl DeviceRegistryBuilder {
-    pub(crate) fn new(cloud_devices: Vec<CloudDevice>, local_devices: Vec<LocalDevice>) -> Self {
+    pub(crate) fn new(
+        cloud_devices: Vec<CloudDevice>,
+        local_devices: Vec<LocalDevice>,
+        snapmaker_devices: Vec<SnapmakerDevice>,
+    ) -> Self {
         let local_ids = local_devices
             .iter()
             .map(|device| device.id.as_str())
@@ -246,6 +277,9 @@ impl DeviceRegistryBuilder {
         }
         for local in local_devices {
             builder.push(DeviceEntry::from_local(local));
+        }
+        for snapmaker in snapmaker_devices {
+            builder.push(DeviceEntry::from_snapmaker(snapmaker));
         }
 
         builder

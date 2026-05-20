@@ -74,23 +74,23 @@ Useful commands:
 
 ```sh
 bambu-overlay serve --bind 0.0.0.0:8765
-bambu-overlay serve --cloud-device 00M123456789012
-bambu-overlay serve --local-device 192.168.1.50,12345678,Office
-bambu-overlay serve --local-device 192.168.1.50
-bambu-overlay serve --local-device 192.168.1.50,12345678,Office --local-device 192.168.1.51,87654321,Garage
-bambu-overlay serve --video-device 192.168.1.50
-bambu-overlay serve --video-device 192.168.1.50 --video-device 192.168.1.51:6001
+bambu-overlay serve --bbl-cloud-device 00M123456789012
+bambu-overlay serve --bbl-local-device 192.168.1.50,12345678,Office
+bambu-overlay serve --bbl-local-device 192.168.1.50
+bambu-overlay serve --bbl-local-device 192.168.1.50,12345678,Office --bbl-local-device 192.168.1.51,87654321,Garage
+bambu-overlay serve --bbl-video-device 192.168.1.50
+bambu-overlay serve --bbl-video-device 192.168.1.50 --bbl-video-device 192.168.1.51:6001
 bambu-overlay mqtt --device 00M123456789012
-bambu-overlay mqtt --local-device 192.168.1.50,12345678
+bambu-overlay mqtt --bbl-local-device 192.168.1.50,12345678
 ```
 
 Configuration is handled with command-line options. Use `--help` on any command
 to see the available options. `login` stores the access token, API base, and
 Bambu MQTT user ID in the token file; re-run `login` if the token file predates
 the stored user ID. `serve` reads that token data in cloud mode and only exposes
-runtime settings such as `--bind`, `--token-file`, `--timeout`, `--cloud-mqtt`,
-`--local-device`, `--cloud-device`, and `--video-device`.
-`--local-device`, `--cloud-device`, and `--video-device` can be repeated.
+runtime settings such as `--bind`, `--bbl-token-file`, `--timeout`, `--bbl-cloud-mqtt`,
+`--bbl-local-device`, `--bbl-cloud-device`, and `--bbl-video-device`.
+`--bbl-local-device`, `--bbl-cloud-device`, and `--bbl-video-device` can be repeated.
 
 ## MQTT monitoring
 
@@ -99,8 +99,8 @@ Use `mqtt` to print raw MQTT report payloads for one printer:
 ```sh
 bambu-overlay mqtt
 bambu-overlay mqtt --device <DEVICE_ID>
-bambu-overlay mqtt --cloud-device <DEVICE_ID>
-bambu-overlay mqtt --local-device <HOST[:MQTT_PORT]>[,<ACCESS_CODE>[,<NAME>]]
+bambu-overlay mqtt --bbl-cloud-device <DEVICE_ID>
+bambu-overlay mqtt --bbl-local-device <HOST[:MQTT_PORT]>[,<ACCESS_CODE>[,<NAME>]]
 ```
 
 The command uses the same cloud enumeration and local-device resolution rules as
@@ -111,10 +111,10 @@ one event per line.
 
 ## Local devices
 
-To add printers directly over LAN MQTT, configure them with `--local-device`:
+To add printers directly over LAN MQTT, configure them with `--bbl-local-device`:
 
 ```sh
-bambu-overlay serve --local-device <HOST[:MQTT_PORT]>[,<ACCESS_CODE>[,<NAME>]]
+bambu-overlay serve --bbl-local-device <HOST[:MQTT_PORT]>[,<ACCESS_CODE>[,<NAME>]]
 ```
 
 `HOST` is the printer LAN address, and `ACCESS_CODE` is the LAN access code shown
@@ -123,53 +123,74 @@ the device certificate common name as the device ID before MQTT authentication.
 The MQTT port defaults to `8883`. If `ACCESS_CODE` is omitted, startup looks up
 the matching Bambu Cloud `/bind` entry when a token is available. Otherwise
 startup fails. Use an empty field when omitting the code but setting a name, for
-example `--local-device <HOST>,,<NAME>`. Repeat
-`--local-device` for multiple printers.
+example `--bbl-local-device <HOST>,,<NAME>`. Repeat
+`--bbl-local-device` for multiple printers.
 
 Hybrid mode is automatic. `serve` calls Bambu Cloud `/bind` only when it needs
-device data from it. If a token file exists and no `--cloud-device` or
-`--local-device` is provided, `/bind` is used as the cloud device catalog. If any
-`--cloud-device <DEVICE_ID>` entry is provided, that explicit list is the
+device data from it. If a token file exists and no `--bbl-cloud-device` or
+`--bbl-local-device` is provided, `/bind` is used as the cloud device catalog. If any
+`--bbl-cloud-device <DEVICE_ID>` entry is provided, that explicit list is the
 complete cloud device catalog and `/bind` is not used for enumeration.
 
-`--cloud-device` entries are id-only. Standalone cloud devices still require a
+`--bbl-cloud-device` entries are id-only. Standalone cloud devices still require a
 Bambu Cloud token for the MQTT UID lookup and MQTT authentication. Local devices
 with complete access codes do not trigger `/bind`; local devices missing an
 access code and explicit cloud video devices without an access code look up
 `/bind` only when that code is actually needed.
 
-To run without any Bambu Cloud API calls, provide only `--local-device` entries
+To run without any Bambu Cloud API calls, provide only `--bbl-local-device` entries
 that include access codes.
 
 Select a local printer the same way as cloud printers:
 `http://127.0.0.1:8765/devices/<DEVICE_ID>/horizontal`.
+
+## Snapmaker printers
+
+`bambu-overlay` also drives Snapmaker printers that run Moonraker (e.g. the
+Snapmaker U1). Add each printer with `--snap-device`:
+
+```sh
+bambu-overlay serve --snap-device <SERIAL>=<HOST[:PORT]>
+```
+
+`SERIAL` is the printer's stable id — the `serial_number` reported by
+Moonraker's `machine/system_info`. `HOST` is the printer's LAN address; `PORT`
+defaults to `80` (Moonraker proxied through nginx). Repeat `--snap-device` for
+multiple printers. Each entry spawns a Moonraker WebSocket worker that
+subscribes to `print_stats`, `display_status`, `extruder[0..3]`, `heater_bed`,
+`virtual_sdcard`, and `print_task_config`, and feeds the shared overlay state.
+
+Snapmaker support in this release covers state only: print progress, layer
+counts, temperatures, and the active tool. Video and thumbnails arrive in a
+follow-up release. Bambu Cloud is not required for Snapmaker — `serve` works
+without a token file when only `--snap-device` is configured.
 
 ## Video
 
 A1 and P1 series printers can expose their camera as MJPEG at `/video.mjpeg`:
 
 ```sh
-bambu-overlay serve --video-device 192.168.1.50
+bambu-overlay serve --bbl-video-device 192.168.1.50
 ```
 
-`--video-device` accepts a printer LAN IP address or hostname, optionally
+`--bbl-video-device` accepts a printer LAN IP address or hostname, optionally
 followed by `:PORT` and `,ACCESS_CODE`, for example
-`--video-device 192.168.1.50:6000,12345678`. Repeat it once per printer when
+`--bbl-video-device 192.168.1.50:6000,12345678`. Repeat it once per printer when
 serving multiple cameras. The printer video server uses port `6000` when no port
 is specified. `serve` probes each explicit
-`--video-device` endpoint at startup, reads the device ID from the printer
+`--bbl-video-device` endpoint at startup, reads the device ID from the printer
 certificate common name, and fails if that device is not present in the known
 device catalog. Known devices include cloud `/bind` devices when enumeration is
-active, plus explicit `--cloud-device` and `--local-device` options. For cloud
-devices, `--video-device` provides the LAN camera endpoint and the access code
-can be provided on `--video-device` or come from `/bind` metadata. For local
-devices, the access code comes from the matching `--local-device` entry or
-`--video-device` entry.
+active, plus explicit `--bbl-cloud-device` and `--bbl-local-device` options. For cloud
+devices, `--bbl-video-device` provides the LAN camera endpoint and the access code
+can be provided on `--bbl-video-device` or come from `/bind` metadata. For local
+devices, the access code comes from the matching `--bbl-local-device` entry or
+`--bbl-video-device` entry.
 
 For local devices, `serve` probes `<HOST>:6000` at startup. If it can complete a
 Bambu device TLS handshake and the printer certificate common name matches the
 local device ID, that endpoint is added automatically. No camera access code is
-sent during startup video probes. `--video-device` remains useful for cloud
+sent during startup video probes. `--bbl-video-device` remains useful for cloud
 devices and for overriding or adding camera endpoints explicitly.
 
 Select a camera with `/devices/<DEVICE_ID>/video.mjpeg`. Without a device path,
@@ -215,6 +236,6 @@ sudo install -d -o bambu-overlay -g bambu-overlay -m 0700 /var/lib/bambu-overlay
 Create the token as that user so the resulting file is owned correctly:
 
 ```sh
-sudo -u bambu-overlay /usr/local/bin/bambu-overlay login --token-file /var/lib/bambu-overlay/token.json
+sudo -u bambu-overlay /usr/local/bin/bambu-overlay login --bbl-token-file /var/lib/bambu-overlay/token.json
 sudo chmod 0600 /var/lib/bambu-overlay/token.json
 ```

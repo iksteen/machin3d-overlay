@@ -12,11 +12,12 @@ use crate::{
     monitor::{monitor_mqtt, MonitorConfig},
     secret::Secret,
     server::{serve, ServerConfig, DEFAULT_HOST, DEFAULT_PORT},
+    snapmaker::SnapmakerDeviceConfig,
     video::VideoEndpoint,
 };
 
 #[derive(Parser)]
-#[command(name = "bambu-overlay", version, about = "Bambu printer OBS overlay")]
+#[command(name = "bambu-overlay", version, about = "3D printer OBS overlay")]
 pub struct Cli {
     #[command(subcommand)]
     command: Command,
@@ -24,11 +25,11 @@ pub struct Cli {
 
 #[derive(Subcommand)]
 enum Command {
-    #[command(about = "Log in and store an access token")]
+    #[command(about = "Log in and store a Bambu Cloud access token")]
     Login(LoginArgs),
-    #[command(about = "List printers in the token account")]
+    #[command(about = "List Bambu printers in the token account")]
     Devices(DevicesArgs),
-    #[command(about = "Monitor MQTT events for one printer")]
+    #[command(about = "Monitor Bambu MQTT events for one printer")]
     Mqtt(MqttArgs),
     #[command(about = "Serve an OBS browser overlay page")]
     Serve(ServeArgs),
@@ -45,7 +46,7 @@ struct HttpArgs {
 #[derive(Args, Clone)]
 struct TokenFileArgs {
     #[arg(
-        long,
+        long = "bbl-token-file",
         value_name = "PATH",
         default_value_os_t = default_token_path().to_path_buf(),
         help = "Bambu Cloud token JSON path"
@@ -56,11 +57,11 @@ struct TokenFileArgs {
 #[derive(Args, Clone)]
 struct ServeTokenFileArgs {
     #[arg(
-        long,
+        long = "bbl-token-file",
         value_name = "PATH",
         default_value_os_t = default_token_path().to_path_buf(),
         help = "Bambu Cloud token JSON path",
-        help_heading = "Cloud"
+        help_heading = "Bambu Cloud"
     )]
     token_file: PathBuf,
 }
@@ -105,18 +106,25 @@ struct ServeArgs {
         default_value_t = 30.0,
         value_parser = positive_f64,
         help = "Bambu Cloud API timeout in seconds",
-        help_heading = "Cloud"
+        help_heading = "Bambu Cloud"
     )]
     timeout: f64,
     #[command(flatten)]
     devices: DeviceSelectionArgs,
     #[arg(
-        long = "video-device",
+        long = "bbl-video-device",
         value_name = "HOST[:PORT][,ACCESS_CODE]",
-        help = "Printer LAN video endpoint; repeat for multiple printers. Port defaults to 6000. The device ID is inferred from the video certificate and must match a configured cloud or local device. ACCESS_CODE can be provided here or looked up from /bind when needed",
-        help_heading = "Local LAN"
+        help = "Bambu LAN video endpoint; repeat for multiple printers. Port defaults to 6000. The device ID is inferred from the video certificate and must match a configured cloud or local device. ACCESS_CODE can be provided here or looked up from /bind when needed",
+        help_heading = "Bambu LAN"
     )]
     video_devices: Vec<VideoEndpoint>,
+    #[arg(
+        long = "snap-device",
+        value_name = "SERIAL=HOST[:PORT]",
+        help = "Snapmaker printer reachable over Moonraker; repeat for multiple printers. Port defaults to 80. SERIAL is the printer's stable id (e.g. the serial number from machine/system_info)",
+        help_heading = "Snapmaker"
+    )]
+    snapmaker_devices: Vec<SnapmakerDeviceConfig>,
 }
 
 #[derive(Args)]
@@ -128,7 +136,7 @@ struct MqttArgs {
         default_value_t = 30.0,
         value_parser = positive_f64,
         help = "Bambu Cloud API timeout in seconds",
-        help_heading = "Cloud"
+        help_heading = "Bambu Cloud"
     )]
     timeout: f64,
     #[command(flatten)]
@@ -145,26 +153,26 @@ struct MqttArgs {
 #[derive(Args, Clone)]
 struct DeviceSelectionArgs {
     #[arg(
-        long = "cloud-mqtt",
+        long = "bbl-cloud-mqtt",
         value_name = "HOST[:PORT]",
         default_value = MQTT_HOST,
         help = "Bambu Cloud MQTT endpoint. Port defaults to 8883",
-        help_heading = "Cloud"
+        help_heading = "Bambu Cloud"
     )]
     cloud_mqtt: MqttEndpoint,
     #[arg(
-        long = "cloud-device",
+        long = "bbl-cloud-device",
         value_name = "DEVICE_ID",
         value_parser = parse_cloud_device_id,
         help = "Explicit Bambu Cloud MQTT device ID; repeat to add devices. When set, /bind enumeration is skipped",
-        help_heading = "Cloud"
+        help_heading = "Bambu Cloud"
     )]
     cloud_devices: Vec<String>,
     #[arg(
-        long = "local-device",
+        long = "bbl-local-device",
         value_name = "HOST[:PORT][,ACCESS_CODE[,NAME]]",
-        help = "Printer LAN MQTT device; repeat for multiple printers. Port defaults to 8883. The device ID is inferred from the MQTT certificate. ACCESS_CODE can be provided here or looked up from /bind when needed",
-        help_heading = "Local LAN"
+        help = "Bambu LAN MQTT device; repeat for multiple printers. Port defaults to 8883. The device ID is inferred from the MQTT certificate. ACCESS_CODE can be provided here or looked up from /bind when needed",
+        help_heading = "Bambu LAN"
     )]
     local_devices: Vec<LocalEndpointConfig>,
 }
@@ -341,6 +349,7 @@ impl From<&ServeArgs> for ServerConfig {
             local_devices: args.devices.local_devices.clone(),
             cloud_devices: args.devices.cloud_devices.clone(),
             video_endpoints: args.video_devices.clone(),
+            snapmaker_devices: args.snapmaker_devices.clone(),
         }
     }
 }

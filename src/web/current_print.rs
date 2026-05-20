@@ -23,7 +23,7 @@ pub(super) async fn current_print(State(state): State<AppState>) -> Response {
     match state.current_print_payload().await {
         Ok(payload) => Json(payload).into_response(),
         Err(error) => {
-            let payload = CurrentPrintPayload::error(error.to_string(), state.mqtt_status().await);
+            let payload = CurrentPrintPayload::error(error.to_string(), state.live_status().await);
             (StatusCode::BAD_GATEWAY, Json(payload)).into_response()
         }
     }
@@ -32,7 +32,7 @@ pub(super) async fn current_print(State(state): State<AppState>) -> Response {
 pub(super) async fn current_print_events(
     State(state): State<AppState>,
 ) -> Sse<impl futures_core::Stream<Item = Result<Event, Infallible>>> {
-    let mut changes = state.mqtt_changes();
+    let mut changes = state.live_changes();
     let mut interval = tokio::time::interval(Duration::from_secs(1));
     let mut shutdown = state.shutdown_receiver();
     let stream = stream! {
@@ -43,7 +43,7 @@ pub(super) async fn current_print_events(
                 _ = interval.tick() => {}
                 received = changes.recv() => {
                     if received.is_err() {
-                        changes = state.mqtt_changes();
+                        changes = state.live_changes();
                     }
                 }
             }
@@ -58,7 +58,7 @@ async fn current_print_event(state: &AppState) -> Event {
     let payload = match state.current_print_payload().await {
         Ok(payload) => serde_json::to_string(&payload),
         Err(error) => {
-            let payload = CurrentPrintPayload::error(error.to_string(), state.mqtt_status().await);
+            let payload = CurrentPrintPayload::error(error.to_string(), state.live_status().await);
             serde_json::to_string(&payload)
         }
     }

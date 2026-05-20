@@ -95,8 +95,8 @@ mod tests {
     use tower::ServiceExt;
 
     use crate::{
-        bambu::CloudDevice, devices::DeviceRegistry, mqtt::MqttRuntime, secret::Secret,
-        service::Shutdown, thumbnail::ThumbnailService, video::VideoStreams,
+        bambu::CloudDevice, devices::DeviceRegistry, live::LiveStateStore, mqtt::MqttRuntime,
+        secret::Secret, service::Shutdown, thumbnail::ThumbnailService, video::VideoStreams,
     };
 
     use super::{router, AppState};
@@ -139,7 +139,8 @@ mod tests {
     }
 
     fn test_state() -> AppState {
-        let mqtt = MqttRuntime::new();
+        let live = LiveStateStore::new();
+        let mqtt = MqttRuntime::new(live.clone());
         let registry = DeviceRegistry::new(
             vec![CloudDevice {
                 id: Some("printer a/1".to_owned()),
@@ -149,7 +150,8 @@ mod tests {
             Vec::new(),
         );
         let (video, _video_events) = VideoStreams::new(registry.clone(), HashMap::new()).unwrap();
-        let thumbnail = ThumbnailService::new(mqtt.clone(), None, registry.clone());
-        AppState::new(mqtt, registry, video, thumbnail, Shutdown::new())
+        let thumbnail =
+            ThumbnailService::new(mqtt.clone(), live.clone(), None, registry.clone());
+        AppState::new(live, registry, video, thumbnail, Shutdown::new())
     }
 }

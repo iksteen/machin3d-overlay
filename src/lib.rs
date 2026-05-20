@@ -14,6 +14,7 @@ pub(crate) mod mqtt;
 pub mod secret;
 pub(crate) mod server;
 pub(crate) mod service;
+pub(crate) mod snapmaker;
 pub(crate) mod thumbnail;
 pub(crate) mod video;
 pub(crate) mod web;

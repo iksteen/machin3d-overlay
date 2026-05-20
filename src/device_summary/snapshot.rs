@@ -173,7 +173,7 @@ impl DeviceSummary {
                 .device
                 .name
                 .clone()
-                .unwrap_or_else(|| "Bambu printer".to_owned()),
+                .unwrap_or_else(|| snapshot.device.id.clone()),
             online: snapshot.device.online.unwrap_or(true),
             service_status: snapshot.service_status(),
             service_connected: snapshot.service_connected(),

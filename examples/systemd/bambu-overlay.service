@@ -8,7 +8,7 @@ Wants=network-online.target
 Type=simple
 User=bambu-overlay
 Group=bambu-overlay
-ExecStart=/usr/local/bin/bambu-overlay serve --bind 0.0.0.0:8765 --token-file /var/lib/bambu-overlay/token.json
+ExecStart=/usr/local/bin/bambu-overlay serve --bind 0.0.0.0:8765 --bbl-token-file /var/lib/bambu-overlay/token.json
 Restart=on-failure
 RestartSec=5s
 
@@ -18,7 +18,7 @@ ProtectHome=true
 ProtectSystem=strict
 
 # StateDirectory creates /var/lib/bambu-overlay on supported systemd versions
-# and assigns it to User/Group. Keep ReadWritePaths aligned with --token-file.
+# and assigns it to User/Group. Keep ReadWritePaths aligned with --bbl-token-file.
 ReadWritePaths=/var/lib/bambu-overlay
 StateDirectory=bambu-overlay
 

@@ -59,7 +59,7 @@ impl ExplicitVideoEndpoints {
                     .await
                     .context("video endpoint probe concurrency limiter closed")?;
                 let device_id = infer_video_device_id(&endpoint).await.with_context(|| {
-                    format!("could not infer device ID for --video-device `{endpoint}`")
+                    format!("could not infer device ID for --bbl-video-device `{endpoint}`")
                 })?;
                 Ok::<_, anyhow::Error>((index, device_id, endpoint))
             });
@@ -94,7 +94,7 @@ impl ExplicitVideoEndpoints {
         for (device_id, video) in self.endpoints {
             let Some(entry) = builder.entry_mut(&device_id) else {
                 anyhow::bail!(
-                    "--video-device `{video}` is for device `{device_id}`, but no matching cloud or local device is configured"
+                    "--bbl-video-device `{video}` is for device `{device_id}`, but no matching cloud or local device is configured"
                 );
             };
             hydrate_device_entry(entry, Some(&video), bind_catalog).await?;
@@ -109,7 +109,7 @@ fn ensure_unique_video_devices(endpoints: &[(String, VideoEndpoint)]) -> Result<
     for (device_id, endpoint) in endpoints {
         if !seen.insert(device_id.as_str()) {
             anyhow::bail!(
-                "--video-device `{endpoint}` resolves to duplicate device id `{device_id}`"
+                "--bbl-video-device `{endpoint}` resolves to duplicate device id `{device_id}`"
             );
         }
     }
@@ -227,7 +227,7 @@ mod tests {
         ])
         .unwrap_err();
 
-        assert!(error.to_string().contains("--video-device"));
+        assert!(error.to_string().contains("--bbl-video-device"));
         assert!(error.to_string().contains("printer-a"));
     }
 
@@ -239,6 +239,7 @@ mod tests {
                 ..CloudDevice::default()
             }],
             Vec::new(),
+            Vec::new(),
         );
         let mut bind_catalog = BindCatalog::new(None, None);
 
@@ -249,7 +250,7 @@ mod tests {
         .await
         .unwrap_err();
 
-        assert!(error.to_string().contains("--video-device"));
+        assert!(error.to_string().contains("--bbl-video-device"));
         assert!(error.to_string().contains("printer-a"));
         assert!(error
             .to_string()
@@ -263,6 +264,7 @@ mod tests {
                 id: Some("printer-a".to_owned()),
                 ..CloudDevice::default()
             }],
+            Vec::new(),
             Vec::new(),
         );
         let mut bind_catalog = BindCatalog::new(None, None);
@@ -291,6 +293,7 @@ mod tests {
                 id: Some("printer-a".to_owned()),
                 ..CloudDevice::default()
             }],
+            Vec::new(),
             Vec::new(),
         );
         let mut bind_catalog = BindCatalog::new(None, None);

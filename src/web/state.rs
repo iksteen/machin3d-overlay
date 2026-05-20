@@ -1,10 +1,10 @@
 //! Shared state handed to every Axum handler.
 //!
-//! `AppState` keeps the runtime services (MQTT, video, thumbnail, device
-//! registry, shutdown, current-print snapshot builder) behind private fields
-//! and exposes intent-shaped methods. Sibling handler modules cannot reach
-//! `state.video`, `state.thumbnail`, etc. directly — the only doorway is the
-//! method surface defined here. The intent is that future changes to those
+//! `AppState` keeps the runtime services (live state store, video, thumbnail,
+//! device registry, shutdown, current-print snapshot builder) behind private
+//! fields and exposes intent-shaped methods. Sibling handler modules cannot
+//! reach `state.video`, `state.thumbnail`, etc. directly — the only doorway is
+//! the method surface defined here. The intent is that future changes to those
 //! services do not need a sweep across the web layer, and that handler tests
 //! depend only on the surface this module documents.
 
@@ -16,7 +16,7 @@ use tokio::sync::broadcast;
 use crate::{
     device_summary::summarize_devices,
     devices::DeviceRegistry,
-    mqtt::{MqttRuntime, MqttStatusPayload},
+    live::{LiveStateStore, LiveStatusPayload},
     service::{Shutdown, ShutdownReceiver},
     thumbnail::{ThumbnailService, ThumbnailStatus},
     video::{VideoStreams, VideoSubscription},
@@ -26,7 +26,7 @@ use super::current_print::CurrentPrintPayload;
 
 #[derive(Clone)]
 pub(crate) struct AppState {
-    mqtt: MqttRuntime,
+    live: LiveStateStore,
     video: VideoStreams,
     thumbnail: ThumbnailService,
     devices: DeviceRegistry,
@@ -35,14 +35,14 @@ pub(crate) struct AppState {
 
 impl AppState {
     pub(crate) fn new(
-        mqtt: MqttRuntime,
+        live: LiveStateStore,
         registry: DeviceRegistry,
         video: VideoStreams,
         thumbnail: ThumbnailService,
         shutdown: Shutdown,
     ) -> Self {
         Self {
-            mqtt,
+            live,
             video,
             thumbnail,
             devices: registry,
@@ -51,18 +51,18 @@ impl AppState {
     }
 
     pub(super) async fn current_print_payload(&self) -> Result<CurrentPrintPayload> {
-        let snapshot = self.mqtt.live_snapshot().await;
+        let snapshot = self.live.snapshot().await;
         let devices =
             summarize_devices(self.devices.devices(), &snapshot.devices, &snapshot.connections);
         Ok(CurrentPrintPayload::success(snapshot.status, devices))
     }
 
-    pub(super) async fn mqtt_status(&self) -> MqttStatusPayload {
-        self.mqtt.status().await
+    pub(super) async fn live_status(&self) -> LiveStatusPayload {
+        self.live.status().await
     }
 
-    pub(super) fn mqtt_changes(&self) -> broadcast::Receiver<()> {
-        self.mqtt.subscribe()
+    pub(super) fn live_changes(&self) -> broadcast::Receiver<()> {
+        self.live.subscribe()
     }
 
     pub(super) fn shutdown_receiver(&self) -> ShutdownReceiver {

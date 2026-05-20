@@ -10,9 +10,9 @@
 mod material;
 mod report;
 mod state;
+mod store;
 
 pub(crate) use material::Material;
 pub(crate) use report::PrinterReport;
-pub(crate) use state::{
-    ConnectionStatus, DeviceConnection, DeviceLiveState, PrintActivity,
-};
+pub(crate) use state::{ConnectionStatus, DeviceConnection, DeviceLiveState, PrintActivity};
+pub(crate) use store::{LiveStateStore, LiveStatusPayload};

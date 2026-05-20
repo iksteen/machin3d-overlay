@@ -153,9 +153,18 @@ fn payload_preview(payload: &[u8]) -> String {
 mod tests {
     use std::collections::HashSet;
 
-    use crate::{live::ConnectionStatus, mqtt::MqttRuntime};
+    use crate::{
+        live::{ConnectionStatus, LiveStateStore},
+        mqtt::MqttRuntime,
+    };
 
     use super::{handle_publish, ReportEvent};
+
+    fn runtime() -> (MqttRuntime, LiveStateStore) {
+        let store = LiveStateStore::new();
+        let runtime = MqttRuntime::new(store.clone());
+        (runtime, store)
+    }
 
     fn report_event(retained: bool) -> ReportEvent {
         ReportEvent {
@@ -174,7 +183,7 @@ mod tests {
 
     #[tokio::test]
     async fn retained_reports_do_not_mark_a_device_connected() {
-        let runtime = MqttRuntime::new();
+        let (runtime, store) = runtime();
         runtime
             .register_connection("printer-a", vec!["printer-a".to_owned()])
             .await;
@@ -182,7 +191,7 @@ mod tests {
 
         handle_publish(&runtime, &allowed(&["printer-a"]), report_event(true)).await;
 
-        let snapshot = runtime.live_snapshot().await;
+        let snapshot = store.snapshot().await;
         assert!(!snapshot.devices.contains_key("printer-a"));
         assert_eq!(
             snapshot.connections.get("printer-a").unwrap().status,
@@ -191,7 +200,7 @@ mod tests {
 
         handle_publish(&runtime, &allowed(&["printer-a"]), report_event(false)).await;
 
-        let snapshot = runtime.live_snapshot().await;
+        let snapshot = store.snapshot().await;
         let state = snapshot.devices.get("printer-a").unwrap();
         assert_eq!(state.connection.status, ConnectionStatus::Connected);
         assert!(state.is_active_task());
@@ -199,7 +208,7 @@ mod tests {
 
     #[tokio::test]
     async fn reports_for_unregistered_devices_are_ignored() {
-        let runtime = MqttRuntime::new();
+        let (runtime, store) = runtime();
         runtime
             .register_connection("printer-a", vec!["printer-a".to_owned()])
             .await;
@@ -216,7 +225,7 @@ mod tests {
         )
         .await;
 
-        let snapshot = runtime.live_snapshot().await;
+        let snapshot = store.snapshot().await;
         assert!(!snapshot.devices.contains_key("printer-b"));
     }
 }

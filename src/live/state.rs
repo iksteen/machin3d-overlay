@@ -13,7 +13,7 @@ pub(crate) struct DeviceLiveState {
     pub(crate) connection: DeviceConnection,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub(crate) struct DeviceConnection {
     pub(crate) key: Option<String>,
     pub(crate) status: ConnectionStatus,

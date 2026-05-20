@@ -13,6 +13,7 @@ use crate::{
     bambu::PrinterStatus,
     cloud::CloudSession,
     devices::DeviceRegistry,
+    live::LiveStateStore,
     mqtt::{MqttDeviceState, MqttRuntime},
     service::ShutdownReceiver,
 };
@@ -57,6 +58,7 @@ pub(crate) struct ThumbnailService {
 
 struct ThumbnailInner {
     mqtt: MqttRuntime,
+    live: LiveStateStore,
     cloud: Option<CloudSession>,
     registry: DeviceRegistry,
     jobs: ThumbnailJobs,
@@ -66,12 +68,14 @@ struct ThumbnailInner {
 impl ThumbnailService {
     pub(crate) fn new(
         mqtt: MqttRuntime,
+        live: LiveStateStore,
         cloud: Option<CloudSession>,
         registry: DeviceRegistry,
     ) -> Self {
         Self {
             inner: Arc::new(ThumbnailInner {
                 mqtt,
+                live,
                 cloud,
                 registry,
                 jobs: ThumbnailJobs::new(),
@@ -93,7 +97,7 @@ impl ThumbnailService {
     }
 
     pub(crate) async fn watch_task_changes(&self, mut shutdown: ShutdownReceiver) {
-        let mut changes = self.inner.mqtt.subscribe();
+        let mut changes = self.inner.live.subscribe();
         let mut jobs = JoinSet::new();
         let mut running_jobs = HashMap::new();
         self.refresh_changed_devices().await;
@@ -108,7 +112,7 @@ impl ThumbnailService {
                 }
                 received = changes.recv() => {
                     if received.is_err() {
-                        changes = self.inner.mqtt.subscribe();
+                        changes = self.inner.live.subscribe();
                     }
                     self.refresh_changed_devices().await;
                 }

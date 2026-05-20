@@ -35,6 +35,7 @@ pub(crate) async fn monitor_mqtt(cloud: Option<CloudSession>, config: MonitorCon
         &config.cloud_devices,
         &config.local_devices,
         &[],
+        &[],
     )
     .await?;
     let target = select_monitor_target(&devices, config.device.as_deref())?;

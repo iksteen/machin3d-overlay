@@ -7,6 +7,7 @@ use tracing::info;
 use crate::{
     cloud::{bound_cloud_devices, explicit_cloud_devices, CloudSession},
     local::{infer_local_device_id, LocalDevice, LocalEndpointConfig},
+    snapmaker::{SnapmakerDevice, SnapmakerDeviceConfig},
     video::VideoEndpoint,
 };
 
@@ -24,11 +25,17 @@ pub(crate) async fn resolve_devices(
     cloud_configs: &[String],
     local_configs: &[LocalEndpointConfig],
     video_endpoints: &[VideoEndpoint],
+    snapmaker_configs: &[SnapmakerDeviceConfig],
 ) -> Result<DeviceRegistry> {
     ensure_unique_cloud_configs(cloud_configs)?;
+    let snapmaker_devices = ensure_unique_snapmaker(snapmaker_configs)?;
     let explicit_video = ExplicitVideoEndpoints::resolve(video_endpoints).await?;
-    let enumerate_cloud_catalog =
-        should_enumerate_cloud_catalog(cloud.is_some(), cloud_configs, local_configs);
+    let enumerate_cloud_catalog = should_enumerate_cloud_catalog(
+        cloud.is_some(),
+        cloud_configs,
+        local_configs,
+        snapmaker_configs,
+    );
     let cloud_devices = if enumerate_cloud_catalog {
         bound_cloud_devices(cloud).await?
     } else {
@@ -40,16 +47,29 @@ pub(crate) async fn resolve_devices(
     );
     let local = resolve_local_devices(local_configs, &explicit_video, &mut bind_catalog).await?;
 
-    let mut builder = DeviceRegistryBuilder::new(cloud_devices, local);
+    let mut builder = DeviceRegistryBuilder::new(cloud_devices, local, snapmaker_devices);
     explicit_video.attach(&mut builder, &mut bind_catalog).await?;
     let registry = builder.build();
     if registry.is_empty() {
         anyhow::bail!(
-            "no devices configured; run `bambu-overlay login`, set --cloud-device, or set --local-device"
+            "no devices configured; run `bambu-overlay login`, set --bbl-cloud-device, --bbl-local-device, or --snap-device"
         );
     }
 
     Ok(registry)
+}
+
+fn ensure_unique_snapmaker(configs: &[SnapmakerDeviceConfig]) -> Result<Vec<SnapmakerDevice>> {
+    let mut seen = HashSet::new();
+    let mut devices = Vec::with_capacity(configs.len());
+    for config in configs {
+        let serial = config.device.serial.trim();
+        if !seen.insert(serial.to_owned()) {
+            anyhow::bail!("--snap-device specified duplicate serial `{serial}`");
+        }
+        devices.push(config.device.clone());
+    }
+    Ok(devices)
 }
 
 fn ensure_unique_cloud_configs(cloud_configs: &[String]) -> Result<()> {
@@ -57,7 +77,7 @@ fn ensure_unique_cloud_configs(cloud_configs: &[String]) -> Result<()> {
     for device_id in cloud_configs {
         let device_id = device_id.trim();
         if !seen.insert(device_id.to_owned()) {
-            anyhow::bail!("--cloud-device specified duplicate device id `{device_id}`");
+            anyhow::bail!("--bbl-cloud-device specified duplicate device id `{device_id}`");
         }
     }
     Ok(())
@@ -73,7 +93,7 @@ async fn resolve_local_devices(
     let device_ids = infer_local_device_ids(configs).await?;
     for (config, device_id) in configs.iter().zip(device_ids) {
         if !seen.insert(device_id.clone()) {
-            anyhow::bail!("--local-device resolves duplicate device id `{device_id}`");
+            anyhow::bail!("--bbl-local-device resolves duplicate device id `{device_id}`");
         }
         info!(
             device_id = %device_id,
@@ -100,7 +120,7 @@ async fn infer_local_device_ids(configs: &[LocalEndpointConfig]) -> Result<Vec<S
                 .context("local device probe concurrency limiter closed")?;
             let endpoint = config.endpoint();
             let device_id = infer_local_device_id(&config).await.with_context(|| {
-                format!("could not infer device ID for --local-device `{endpoint}`")
+                format!("could not infer device ID for --bbl-local-device `{endpoint}`")
             })?;
             Ok::<_, anyhow::Error>((index, device_id))
         });
@@ -141,8 +161,12 @@ fn should_enumerate_cloud_catalog(
     cloud_available: bool,
     cloud_configs: &[String],
     local_configs: &[LocalEndpointConfig],
+    snapmaker_configs: &[SnapmakerDeviceConfig],
 ) -> bool {
-    cloud_available && cloud_configs.is_empty() && local_configs.is_empty()
+    cloud_available
+        && cloud_configs.is_empty()
+        && local_configs.is_empty()
+        && snapmaker_configs.is_empty()
 }
 
 fn finalize_local_device(device_id: String, endpoint: LocalEndpointConfig) -> Result<LocalDevice> {
@@ -153,7 +177,7 @@ fn finalize_local_device(device_id: String, endpoint: LocalEndpointConfig) -> Re
         .cloned()
         .with_context(|| {
             format!(
-                "--local-device `{}` is missing an access code; provide ACCESS_CODE or cloud metadata that exposes dev_access_code",
+                "--bbl-local-device `{}` is missing an access code; provide ACCESS_CODE or cloud metadata that exposes dev_access_code",
                 device_id
             )
         })?;
@@ -226,17 +250,25 @@ mod tests {
 
     #[test]
     fn cloud_catalog_enumeration_only_happens_when_no_devices_are_configured() {
-        assert!(should_enumerate_cloud_catalog(true, &[], &[]));
-        assert!(!should_enumerate_cloud_catalog(false, &[], &[]));
+        assert!(should_enumerate_cloud_catalog(true, &[], &[], &[]));
+        assert!(!should_enumerate_cloud_catalog(false, &[], &[], &[]));
         assert!(!should_enumerate_cloud_catalog(
             true,
             &["printer-a".to_owned()],
-            &[]
+            &[],
+            &[],
         ));
         assert!(!should_enumerate_cloud_catalog(
             true,
             &[],
-            &[local_arg("192.168.1.50,12345678")]
+            &[local_arg("192.168.1.50,12345678")],
+            &[],
+        ));
+        assert!(!should_enumerate_cloud_catalog(
+            true,
+            &[],
+            &[],
+            &["U1=192.168.0.120".parse().unwrap()],
         ));
     }
 
@@ -246,13 +278,13 @@ mod tests {
             ensure_unique_cloud_configs(&["printer-a".to_owned(), " printer-a ".to_owned()])
                 .unwrap_err();
 
-        assert!(error.to_string().contains("--cloud-device"));
+        assert!(error.to_string().contains("--bbl-cloud-device"));
         assert!(error.to_string().contains("printer-a"));
     }
 
     #[tokio::test]
     async fn explicit_cloud_devices_resolve_without_cloud_session() {
-        let registry = resolve_devices(None, &["printer-a".to_owned()], &[], &[])
+        let registry = resolve_devices(None, &["printer-a".to_owned()], &[], &[], &[])
             .await
             .expect("explicit cloud device should not require /bind metadata");
 
@@ -268,7 +300,7 @@ mod tests {
 
     #[tokio::test]
     async fn no_configured_devices_errors_without_cloud_enumeration() {
-        let error = resolve_devices(None, &[], &[], &[]).await.unwrap_err();
+        let error = resolve_devices(None, &[], &[], &[], &[]).await.unwrap_err();
 
         assert!(error.to_string().contains("no devices configured"));
     }

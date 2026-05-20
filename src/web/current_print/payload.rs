@@ -8,8 +8,7 @@ use serde::Serialize;
 
 use crate::{
     device_summary::{DeviceSummary, TaskSource},
-    live::Material,
-    mqtt::MqttStatusPayload,
+    live::{LiveStatusPayload, Material},
 };
 
 use super::super::paths;
@@ -21,7 +20,7 @@ pub(in crate::web) struct CurrentPrintPayload {
     #[serde(skip_serializing_if = "Option::is_none")]
     error: Option<String>,
     updated_at: String,
-    mqtt: MqttStatusPayload,
+    mqtt: LiveStatusPayload,
     devices: Vec<DevicePayload>,
 }
 
@@ -68,7 +67,7 @@ struct MaterialPayload {
 
 impl CurrentPrintPayload {
     pub(in crate::web) fn success(
-        mqtt: MqttStatusPayload,
+        mqtt: LiveStatusPayload,
         devices: impl IntoIterator<Item = DeviceSummary>,
     ) -> CurrentPrintPayload {
         CurrentPrintPayload {
@@ -82,7 +81,7 @@ impl CurrentPrintPayload {
 
     pub(in crate::web) fn error(
         error: impl Into<String>,
-        mqtt: MqttStatusPayload,
+        mqtt: LiveStatusPayload,
     ) -> CurrentPrintPayload {
         CurrentPrintPayload {
             ok: false,
@@ -231,8 +230,7 @@ fn parse_bambu_datetime(text: &str) -> Option<chrono::DateTime<Utc>> {
 mod tests {
     use crate::{
         device_summary::{DeviceSummary, TaskSource},
-        live::{ConnectionStatus, Material},
-        mqtt::MqttStatusPayload,
+        live::{ConnectionStatus, LiveStatusPayload, Material},
     };
 
     use super::CurrentPrintPayload;
@@ -240,7 +238,7 @@ mod tests {
     #[test]
     fn device_payload_formats_web_payload_fields() {
         let payload = CurrentPrintPayload::success(
-            MqttStatusPayload {
+            LiveStatusPayload {
                 any_connected: true,
                 error: None,
                 updated_at: None,
@@ -308,7 +306,7 @@ mod tests {
     #[test]
     fn success_payload_omits_error_field() {
         let payload = CurrentPrintPayload::success(
-            MqttStatusPayload {
+            LiveStatusPayload {
                 any_connected: true,
                 error: None,
                 updated_at: None,

@@ -8,9 +8,11 @@ use crate::{
     bambu::{MQTT_HOST, MQTT_PORT},
     cloud::CloudSession,
     devices::{resolve_devices, resolve_video_endpoints},
+    live::LiveStateStore,
     local::{Endpoint, LocalEndpointConfig, MqttEndpoint},
     mqtt::MqttRuntime,
     service::{wait_for_process_shutdown_signal, ServiceTasks, Shutdown},
+    snapmaker::{self, SnapmakerDeviceConfig},
     thumbnail::ThumbnailService,
     video::{VideoEndpoint, VideoStreams, VideoWorkerEvents},
     web::{serve_http, AppState},
@@ -27,6 +29,7 @@ pub(crate) struct ServerConfig {
     pub local_devices: Vec<LocalEndpointConfig>,
     pub cloud_devices: Vec<String>,
     pub video_endpoints: Vec<VideoEndpoint>,
+    pub snapmaker_devices: Vec<SnapmakerDeviceConfig>,
 }
 
 impl Default for ServerConfig {
@@ -37,6 +40,7 @@ impl Default for ServerConfig {
             local_devices: Vec::new(),
             cloud_devices: Vec::new(),
             video_endpoints: Vec::new(),
+            snapmaker_devices: Vec::new(),
         }
     }
 }
@@ -87,20 +91,23 @@ impl ServiceGraph {
         config: ServerConfig,
         shutdown: Shutdown,
     ) -> Result<Self> {
-        let mqtt = MqttRuntime::new();
+        let live = LiveStateStore::new();
+        let mqtt = MqttRuntime::new(live.clone());
         let registry = resolve_devices(
             cloud.as_ref(),
             &config.cloud_devices,
             &config.local_devices,
             &config.video_endpoints,
+            &config.snapmaker_devices,
         )
         .await?;
         let video_endpoints = resolve_video_endpoints(&registry).await?;
         let (video, video_worker_events) =
             VideoStreams::new(registry.clone(), video_endpoints.endpoints_by_device)?;
-        let thumbnail = ThumbnailService::new(mqtt.clone(), cloud.clone(), registry.clone());
+        let thumbnail =
+            ThumbnailService::new(mqtt.clone(), live.clone(), cloud.clone(), registry.clone());
         let state = AppState::new(
-            mqtt.clone(),
+            live.clone(),
             registry.clone(),
             video.clone(),
             thumbnail.clone(),
@@ -116,6 +123,7 @@ impl ServiceGraph {
             &mut tasks,
             &shutdown,
         )?;
+        snapmaker::backend::spawn(live, &registry, &mut tasks, &shutdown);
         spawn_shared_workers(video, video_worker_events, thumbnail, &mut tasks, &shutdown);
 
         Ok(Self {

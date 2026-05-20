@@ -95,7 +95,7 @@ impl VideoStreams {
 
     pub async fn subscribe(&self, device_id: Option<&str>) -> Result<VideoSubscription> {
         if self.state.endpoints_by_device.is_empty() {
-            bail!("video stream is disabled; set at least one --video-device");
+            bail!("video stream is disabled; set at least one --bbl-video-device");
         }
 
         let session = resolve_session(&self.state, device_id).await?;
