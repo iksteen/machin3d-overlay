@@ -97,31 +97,31 @@
     `;
   }
 
-  function spoolElement(spool) {
+  function spoolElement(material) {
     const el = document.createElement("div");
     el.className = "spool";
-    el.classList.toggle("is-active", spool.active === true);
+    el.classList.toggle("is-active", material.active === true);
 
     const roll = document.createElement("div");
     roll.className = "spool-roll";
-    roll.style.setProperty("--spool-color", spool.color || "#9ca3af");
+    roll.style.setProperty("--spool-color", material.color || "#9ca3af");
     roll.innerHTML = spoolSvg();
 
     const tag = document.createElement("span");
     tag.className = "spool-tag";
-    tag.textContent = spool.label || "?";
+    tag.textContent = material.label || "?";
 
-    const material = document.createElement("span");
-    material.className = "spool-material";
-    material.textContent = spool.material || "Filament";
+    const kind = document.createElement("span");
+    kind.className = "spool-material";
+    kind.textContent = material.kind || "Filament";
 
     roll.append(tag);
-    el.append(roll, material);
+    el.append(roll, kind);
     return el;
   }
 
-  function renderSpools(node, spools, emptyText) {
-    const items = Array.isArray(spools) ? spools.filter(Boolean) : [];
+  function renderMaterials(node, materials, emptyText) {
+    const items = Array.isArray(materials) ? materials.filter(Boolean) : [];
     if (items.length === 0) {
       const empty = document.createElement("div");
       empty.className = "empty";
@@ -311,7 +311,7 @@
     setText(state.bedTemp, "--");
     setText(state.fanSpeed, "--");
     setText(state.printMode, "--");
-    renderSpools(state.spoolList, [], "No spool data");
+    renderMaterials(state.spoolList, [], "No material data");
     renderThumb(null);
   }
 
@@ -357,11 +357,7 @@
     setText(state.bedTemp, fallback(device.bedTemp));
     setText(state.fanSpeed, fallback(device.fanSpeed));
     setText(state.printMode, fallback(device.mode));
-    renderSpools(
-      state.spoolList,
-      [...(device.amsSpools || []), ...(device.externalSpool ? [device.externalSpool] : [])],
-      "No spool data",
-    );
+    renderMaterials(state.spoolList, device.materials || [], "No material data");
 
     state.progress.style.width = progress == null ? "0%" : `${progress}%`;
     renderThumb(device.thumbnail, device.thumbnailTask || device.thumbnail);

@@ -4,10 +4,7 @@ use crate::{
     mqtt::{MqttConnectionStatus, MqttDeviceConnection, MqttDeviceState, PrintActivity},
 };
 
-use super::{
-    spool::{ams_spools, external_spool},
-    DeviceSummary, TaskSource,
-};
+use super::{material::materials, DeviceSummary, TaskSource};
 
 pub(super) fn summarize_device(
     device: &KnownDevice,
@@ -200,8 +197,7 @@ impl DeviceSummary {
             bed_temperature: snapshot.print_f64(|print| print.bed_temperature),
             fan_speed: snapshot.print_f64(|print| print.fan_speed),
             print_mode: snapshot.display_mode(),
-            ams_spools: ams_spools(snapshot.ams(), active_tray),
-            external_spool: external_spool(snapshot.external_tray(), active_tray),
+            materials: materials(snapshot.ams(), snapshot.external_tray(), active_tray),
             is_printing,
             task_source: TaskSource::PrinterStatus,
             plate_index: None,

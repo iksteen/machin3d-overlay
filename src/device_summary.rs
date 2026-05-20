@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 
+mod material;
 mod snapshot;
-mod spool;
 
 #[cfg(test)]
 mod tests;
@@ -11,7 +11,7 @@ use crate::{
     mqtt::{MqttConnectionStatus, MqttDeviceConnection, MqttDeviceState},
 };
 
-pub(crate) use spool::Spool;
+pub(crate) use material::Material;
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub(crate) enum TaskSource {
@@ -43,8 +43,7 @@ pub(crate) struct DeviceSummary {
     pub(crate) bed_temperature: Option<f64>,
     pub(crate) fan_speed: Option<f64>,
     pub(crate) print_mode: Option<String>,
-    pub(crate) ams_spools: Vec<Spool>,
-    pub(crate) external_spool: Option<Spool>,
+    pub(crate) materials: Vec<Material>,
     pub(crate) is_printing: bool,
     pub(crate) task_source: TaskSource,
     pub(crate) plate_index: Option<String>,

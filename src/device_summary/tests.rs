@@ -73,7 +73,7 @@ fn summarize_devices_uses_matching_mqtt_report_fields_only() {
 }
 
 #[test]
-fn summarize_devices_keeps_cloud_spools_when_mqtt_report_is_empty() {
+fn summarize_devices_keeps_cloud_materials_when_mqtt_report_is_empty() {
     let devices = vec![device(json!({
                 "dev_id": "printer-a",
                 "print": {
@@ -116,17 +116,19 @@ fn summarize_devices_keeps_cloud_spools_when_mqtt_report_is_empty() {
         .unwrap();
 
     assert_eq!(summary.progress, Some(42.0));
-    assert_eq!(summary.ams_spools.len(), 1);
-    assert_eq!(summary.ams_spools[0].material, "PLA");
-    assert_eq!(summary.ams_spools[0].color, "#FF0000");
-    assert!(!summary.ams_spools[0].active);
-    assert_eq!(summary.external_spool.as_ref().unwrap().material, "PETG");
-    assert_eq!(summary.external_spool.as_ref().unwrap().color, "#336699");
-    assert!(summary.external_spool.as_ref().unwrap().active);
+    assert_eq!(summary.materials.len(), 2);
+    assert_eq!(summary.materials[0].label, "1");
+    assert_eq!(summary.materials[0].kind, "PLA");
+    assert_eq!(summary.materials[0].color, "#FF0000");
+    assert!(!summary.materials[0].active);
+    assert_eq!(summary.materials[1].label, "ext");
+    assert_eq!(summary.materials[1].kind, "PETG");
+    assert_eq!(summary.materials[1].color, "#336699");
+    assert!(summary.materials[1].active);
 }
 
 #[test]
-fn summarize_devices_uses_catalog_status_and_spools() {
+fn summarize_devices_uses_catalog_status_and_materials() {
     let devices = vec![device(json!({
                 "dev_id": "printer-a",
                 "dev_name": "Office X1",
@@ -172,10 +174,11 @@ fn summarize_devices_uses_catalog_status_and_spools() {
     assert_eq!(summary.weight, None);
     assert_eq!(summary.plate_index, None);
     assert_eq!(summary.thumbnail_task.as_deref(), Some("Calibration cube"));
-    assert_eq!(summary.ams_spools.len(), 1);
-    assert_eq!(summary.ams_spools[0].material, "PLA");
-    assert_eq!(summary.ams_spools[0].color, "#FF0000");
-    assert!(summary.ams_spools[0].active);
+    assert_eq!(summary.materials.len(), 1);
+    assert_eq!(summary.materials[0].label, "1");
+    assert_eq!(summary.materials[0].kind, "PLA");
+    assert_eq!(summary.materials[0].color, "#FF0000");
+    assert!(summary.materials[0].active);
 }
 
 #[test]
@@ -260,8 +263,8 @@ fn summarize_devices_ignores_stale_task_fields_when_printer_is_finished() {
     assert_eq!(summary.thumbnail_task, None);
     assert_eq!(summary.toolhead_temperature, Some(210.0));
     assert_eq!(summary.bed_temperature, Some(60.0));
-    assert_eq!(summary.ams_spools.len(), 1);
-    assert!(!summary.ams_spools[0].active);
+    assert_eq!(summary.materials.len(), 1);
+    assert!(!summary.materials[0].active);
 }
 
 #[test]
@@ -312,5 +315,5 @@ fn summarize_devices_ignores_stale_mqtt_reports() {
     assert_eq!(summary.title, None);
     assert_eq!(summary.progress, None);
     assert_eq!(summary.toolhead_temperature, None);
-    assert!(summary.ams_spools.is_empty());
+    assert!(summary.materials.is_empty());
 }

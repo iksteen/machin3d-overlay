@@ -7,7 +7,7 @@ use chrono::Utc;
 use serde::Serialize;
 
 use crate::{
-    device_summary::{DeviceSummary, Spool, TaskSource},
+    device_summary::{DeviceSummary, Material, TaskSource},
     mqtt::MqttStatusPayload,
 };
 
@@ -52,16 +52,15 @@ struct DevicePayload {
     fan_speed: Option<String>,
     started: Option<String>,
     plate: Option<String>,
-    ams_spools: Vec<SpoolPayload>,
-    external_spool: Option<SpoolPayload>,
+    materials: Vec<MaterialPayload>,
     thumbnail: Option<String>,
     thumbnail_task: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
-struct SpoolPayload {
+struct MaterialPayload {
     label: String,
-    material: String,
+    kind: String,
     color: String,
     active: bool,
 }
@@ -128,25 +127,24 @@ impl From<DeviceSummary> for DevicePayload {
             fan_speed: device.fan_speed.map(format_percent),
             started: device.start_time,
             plate: device.plate_index,
-            ams_spools: device
-                .ams_spools
+            materials: device
+                .materials
                 .into_iter()
-                .map(SpoolPayload::from)
+                .map(MaterialPayload::from)
                 .collect(),
-            external_spool: device.external_spool.map(SpoolPayload::from),
             thumbnail,
             thumbnail_task,
         }
     }
 }
 
-impl From<Spool> for SpoolPayload {
-    fn from(spool: Spool) -> Self {
+impl From<Material> for MaterialPayload {
+    fn from(material: Material) -> Self {
         Self {
-            label: spool.label,
-            material: spool.material,
-            color: spool.color,
-            active: spool.active,
+            label: material.label,
+            kind: material.kind,
+            color: material.color,
+            active: material.active,
         }
     }
 }
@@ -231,7 +229,7 @@ fn parse_bambu_datetime(text: &str) -> Option<chrono::DateTime<Utc>> {
 #[cfg(test)]
 mod tests {
     use crate::{
-        device_summary::{DeviceSummary, Spool, TaskSource},
+        device_summary::{DeviceSummary, Material, TaskSource},
         mqtt::{MqttConnectionStatus, MqttStatusPayload},
     };
 
@@ -269,13 +267,12 @@ mod tests {
                 print_mode: Some("Standard".to_owned()),
                 plate_index: None,
                 thumbnail_task: Some("Calibration cube".to_owned()),
-                ams_spools: vec![Spool {
+                materials: vec![Material {
                     label: "1".to_owned(),
-                    material: "PLA".to_owned(),
+                    kind: "PLA".to_owned(),
                     color: "#FF0000".to_owned(),
                     active: true,
                 }],
-                external_spool: None,
                 ..DeviceSummary::default()
             }],
         );
@@ -300,10 +297,10 @@ mod tests {
             Some("/devices/printer-a/thumbnail")
         );
         assert_eq!(device.thumbnail_task.as_deref(), Some("Calibration cube"));
-        assert_eq!(device.ams_spools.len(), 1);
-        assert_eq!(device.ams_spools[0].material, "PLA");
-        assert_eq!(device.ams_spools[0].color, "#FF0000");
-        assert!(device.ams_spools[0].active);
+        assert_eq!(device.materials.len(), 1);
+        assert_eq!(device.materials[0].kind, "PLA");
+        assert_eq!(device.materials[0].color, "#FF0000");
+        assert!(device.materials[0].active);
     }
 
     #[test]
