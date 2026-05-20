@@ -1,6 +1,7 @@
 pub(crate) mod assets;
 pub(crate) mod auth;
 pub mod bambu;
+pub(crate) mod backend;
 pub mod cli;
 pub(crate) mod cloud;
 pub(crate) mod device_summary;

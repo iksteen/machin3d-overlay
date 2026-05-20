@@ -4,11 +4,12 @@ use anyhow::Result;
 use tracing::warn;
 
 use crate::{
+    bambu,
     bambu::{MQTT_HOST, MQTT_PORT},
-    cloud::{cloud_mqtt_startup, CloudSession},
+    cloud::CloudSession,
     devices::{resolve_devices, resolve_video_endpoints},
-    local::{Endpoint, LocalDevice, LocalEndpointConfig, MqttEndpoint},
-    mqtt::{supervise_target, MqttRuntime, MqttTarget},
+    local::{Endpoint, LocalEndpointConfig, MqttEndpoint},
+    mqtt::MqttRuntime,
     service::{wait_for_process_shutdown_signal, ServiceTasks, Shutdown},
     thumbnail::ThumbnailService,
     video::{VideoEndpoint, VideoStreams, VideoWorkerEvents},
@@ -80,15 +81,6 @@ struct ServiceGraph {
     tasks: ServiceTasks,
 }
 
-struct BackgroundServices {
-    mqtt: MqttRuntime,
-    video: VideoStreams,
-    video_worker_events: VideoWorkerEvents,
-    thumbnail: ThumbnailService,
-    cloud_mqtt: Option<MqttTarget>,
-    local_devices: Vec<LocalDevice>,
-}
-
 impl ServiceGraph {
     async fn build(
         cloud: Option<CloudSession>,
@@ -103,32 +95,28 @@ impl ServiceGraph {
             &config.video_endpoints,
         )
         .await?;
-        let cloud_mqtt_ids = registry.cloud_mqtt_ids();
-        let cloud_mqtt = cloud_mqtt_startup(cloud.as_ref(), &config.cloud_mqtt, &cloud_mqtt_ids)?
-            .map(|startup| startup.into_target());
         let video_endpoints = resolve_video_endpoints(&registry).await?;
         let (video, video_worker_events) =
             VideoStreams::new(registry.clone(), video_endpoints.endpoints_by_device)?;
         let thumbnail = ThumbnailService::new(mqtt.clone(), cloud.clone(), registry.clone());
-        let local_devices = registry.local_devices();
         let state = AppState::new(
             mqtt.clone(),
-            registry,
+            registry.clone(),
             video.clone(),
             thumbnail.clone(),
             shutdown.clone(),
         );
-        let background = BackgroundServices {
-            mqtt,
-            video,
-            video_worker_events,
-            thumbnail,
-            cloud_mqtt,
-            local_devices,
-        };
 
         let mut tasks = ServiceTasks::new();
-        background.spawn(&mut tasks, &shutdown);
+        bambu::backend::spawn(
+            mqtt,
+            cloud.as_ref(),
+            &config.cloud_mqtt,
+            &registry,
+            &mut tasks,
+            &shutdown,
+        )?;
+        spawn_shared_workers(video, video_worker_events, thumbnail, &mut tasks, &shutdown);
 
         Ok(Self {
             bind: config.bind,
@@ -138,38 +126,23 @@ impl ServiceGraph {
     }
 }
 
-impl BackgroundServices {
-    fn spawn(self, tasks: &mut ServiceTasks, shutdown: &Shutdown) {
-        let video = self.video;
-        let video_worker_events = self.video_worker_events;
-        tasks.spawn_with_shutdown(
-            shutdown,
-            "video worker watcher",
-            move |shutdown| async move {
-                video.watch_workers(video_worker_events, shutdown).await;
-            },
-        );
-
-        let thumbnail = self.thumbnail;
-        tasks.spawn_with_shutdown(shutdown, "thumbnail watcher", move |shutdown| async move {
-            thumbnail.watch_task_changes(shutdown).await;
-        });
-
-        if let Some(cloud_mqtt) = self.cloud_mqtt {
-            let mqtt = self.mqtt.clone();
-            tasks.spawn_with_shutdown(shutdown, "cloud MQTT supervisor", move |shutdown| {
-                supervise_target(mqtt, cloud_mqtt, shutdown)
-            });
-        }
-
-        for device in self.local_devices {
-            let task_name = format!("local MQTT supervisor ({})", device.id);
-            let mqtt = self.mqtt.clone();
-            tasks.spawn_with_shutdown(shutdown, task_name, move |shutdown| {
-                supervise_target(mqtt, MqttTarget::local(device), shutdown)
-            });
-        }
-    }
+fn spawn_shared_workers(
+    video: VideoStreams,
+    video_worker_events: VideoWorkerEvents,
+    thumbnail: ThumbnailService,
+    tasks: &mut ServiceTasks,
+    shutdown: &Shutdown,
+) {
+    tasks.spawn_with_shutdown(
+        shutdown,
+        "video worker watcher",
+        move |shutdown| async move {
+            video.watch_workers(video_worker_events, shutdown).await;
+        },
+    );
+    tasks.spawn_with_shutdown(shutdown, "thumbnail watcher", move |shutdown| async move {
+        thumbnail.watch_task_changes(shutdown).await;
+    });
 }
 
 enum ServeStop {

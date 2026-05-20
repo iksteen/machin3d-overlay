@@ -1,3 +1,4 @@
+pub(crate) mod backend;
 mod client;
 mod de;
 mod error;

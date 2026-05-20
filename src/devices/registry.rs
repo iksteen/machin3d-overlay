@@ -13,6 +13,7 @@
 use std::collections::{HashMap, HashSet};
 
 use crate::{
+    backend::Backend,
     bambu::{printer_status_to_live, CloudDevice},
     live::PrinterReport,
     local::LocalDevice,
@@ -60,6 +61,7 @@ pub(crate) struct DeviceEntry {
     device: KnownDevice,
     credentials: DeviceCredentials,
     capabilities: DeviceCapabilities,
+    backend: Backend,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -92,6 +94,7 @@ impl DeviceEntry {
                 cloud_mqtt: true,
                 ..DeviceCapabilities::default()
             },
+            backend: Backend::Bambu,
         })
     }
 
@@ -103,7 +106,12 @@ impl DeviceEntry {
                 local_mqtt: Some(local),
                 ..DeviceCapabilities::default()
             },
+            backend: Backend::Bambu,
         }
+    }
+
+    pub(crate) fn backend(&self) -> Backend {
+        self.backend
     }
 
     pub(crate) fn device(&self) -> &KnownDevice {
@@ -209,14 +217,6 @@ impl DeviceRegistry {
         self.entries
             .iter()
             .filter_map(|entry| entry.local().cloned())
-            .collect()
-    }
-
-    pub(crate) fn cloud_mqtt_ids(&self) -> Vec<String> {
-        self.entries
-            .iter()
-            .filter(|entry| entry.has_cloud_mqtt())
-            .map(|entry| entry.device.id.clone())
             .collect()
     }
 }
@@ -359,7 +359,7 @@ mod tests {
     }
 
     #[test]
-    fn registry_cloud_mqtt_ids_only_include_cloud_devices() {
+    fn registry_marks_cloud_mqtt_only_for_cloud_devices() {
         let registry = DeviceRegistry::new(
             vec![CloudDevice {
                 id: Some("printer-a".to_owned()),
@@ -368,7 +368,13 @@ mod tests {
             vec![local_device("printer-b", Some("Office"))],
         );
 
-        assert_eq!(registry.cloud_mqtt_ids(), vec!["printer-a".to_owned()]);
+        let cloud_ids: Vec<_> = registry
+            .entries()
+            .iter()
+            .filter(|entry| entry.has_cloud_mqtt())
+            .map(|entry| entry.id().to_owned())
+            .collect();
+        assert_eq!(cloud_ids, vec!["printer-a".to_owned()]);
     }
 
     #[test]
