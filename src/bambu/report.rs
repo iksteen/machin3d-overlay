@@ -2,7 +2,7 @@
 //! `live::PrinterReport` consumed by the summary layer.
 //!
 //! The summary layer never sees `AmsState` / `Tray` / `speed_level` — those
-//! get folded into a flat `Vec<Material>` and a `print_mode` string here.
+//! get folded into a flat `Vec<Material>` and a `print_speed` label here.
 
 use crate::live::{Material, PrinterReport};
 
@@ -28,7 +28,7 @@ pub(crate) fn to_live(status: &PrinterStatus) -> PrinterReport {
         toolhead_temperature: status.toolhead_temperature,
         bed_temperature: status.bed_temperature,
         fan_speed: status.fan_speed,
-        print_mode: print_mode(status.speed_level),
+        print_speed: speed_label(status.speed_level),
         materials,
         active_material,
     }
@@ -64,7 +64,7 @@ fn active_material_label(
     None
 }
 
-fn print_mode(speed_level: Option<i64>) -> Option<String> {
+fn speed_label(speed_level: Option<i64>) -> Option<String> {
     speed_level.map(|level| match level {
         1 => "Silent".to_owned(),
         2 => "Standard".to_owned(),
@@ -166,7 +166,7 @@ mod tests {
     }
 
     #[test]
-    fn to_live_packs_materials_and_print_mode() {
+    fn to_live_packs_materials_and_print_speed() {
         let status: PrinterStatus = serde_json::from_value(json!({
             "gcode_state": "RUNNING",
             "mc_percent": 25,
@@ -190,7 +190,7 @@ mod tests {
 
         assert_eq!(report.status.as_deref(), Some("RUNNING"));
         assert_eq!(report.progress, Some(25.0));
-        assert_eq!(report.print_mode.as_deref(), Some("Standard"));
+        assert_eq!(report.print_speed.as_deref(), Some("Standard"));
         assert_eq!(report.materials.len(), 2);
         assert_eq!(report.materials[0].label, "1");
         assert_eq!(report.materials[0].kind, "PLA");

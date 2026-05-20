@@ -115,8 +115,9 @@ impl<'a> DeviceSnapshot<'a> {
         materials
     }
 
-    fn print_mode(&self) -> Option<String> {
-        self.active_report().and_then(|report| report.print_mode.clone())
+    fn print_speed(&self) -> Option<String> {
+        self.active_report()
+            .and_then(|report| report.print_speed.clone())
     }
 
     fn task_id(&self) -> Option<String> {
@@ -197,7 +198,7 @@ impl DeviceSummary {
             toolhead_temperature: snapshot.report_f64(|report| report.toolhead_temperature),
             bed_temperature: snapshot.report_f64(|report| report.bed_temperature),
             fan_speed: snapshot.report_f64(|report| report.fan_speed),
-            print_mode: snapshot.print_mode(),
+            print_speed: snapshot.print_speed(),
             materials: snapshot.materials(),
             is_printing,
             task_source: TaskSource::PrinterStatus,

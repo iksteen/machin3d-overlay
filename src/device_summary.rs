@@ -39,7 +39,7 @@ pub(crate) struct DeviceSummary {
     pub(crate) toolhead_temperature: Option<f64>,
     pub(crate) bed_temperature: Option<f64>,
     pub(crate) fan_speed: Option<f64>,
-    pub(crate) print_mode: Option<String>,
+    pub(crate) print_speed: Option<String>,
     pub(crate) materials: Vec<Material>,
     pub(crate) is_printing: bool,
     pub(crate) task_source: TaskSource,

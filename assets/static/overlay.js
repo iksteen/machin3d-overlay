@@ -15,7 +15,7 @@
     toolheadTemp: document.getElementById("toolheadTemp"),
     bedTemp: document.getElementById("bedTemp"),
     fanSpeed: document.getElementById("fanSpeed"),
-    printMode: document.getElementById("printMode"),
+    printSpeed: document.getElementById("printSpeed"),
     spoolList: document.getElementById("spoolList"),
     thumbSlot: document.getElementById("thumbSlot"),
     thumbUrl: null,
@@ -326,7 +326,7 @@
     setText(state.toolheadTemp, "--");
     setText(state.bedTemp, "--");
     setText(state.fanSpeed, "--");
-    setText(state.printMode, "--");
+    setText(state.printSpeed, "--");
     renderMaterials(state.spoolList, [], "No material data");
     renderThumb(null);
   }
@@ -372,7 +372,7 @@
     setText(state.toolheadTemp, fallback(device.toolheadTemp));
     setText(state.bedTemp, fallback(device.bedTemp));
     setText(state.fanSpeed, fallback(device.fanSpeed));
-    setText(state.printMode, fallback(device.mode));
+    setText(state.printSpeed, fallback(device.printSpeed));
     renderMaterials(state.spoolList, device.materials || [], "No material data");
 
     state.progress.style.width = progress == null ? "0%" : `${progress}%`;

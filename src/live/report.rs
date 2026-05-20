@@ -22,7 +22,7 @@ pub(crate) struct PrinterReport {
     pub(crate) toolhead_temperature: Option<f64>,
     pub(crate) bed_temperature: Option<f64>,
     pub(crate) fan_speed: Option<f64>,
-    pub(crate) print_mode: Option<String>,
+    pub(crate) print_speed: Option<String>,
     pub(crate) materials: Vec<Material>,
     /// Label of the slot the printer reports as currently in use. Applied to
     /// `materials` at summary time, but only when the task is active — so an
