@@ -22,6 +22,8 @@
     thumbKey: null,
     thumbPendingUrl: null,
     thumbPendingKey: null,
+    thumbFailedUrl: null,
+    thumbFailedKey: null,
     thumbRetryTimer: null,
     thumbObjectUrl: null,
     thumbRequest: 0,
@@ -185,7 +187,13 @@
       state.thumbKey = null;
       state.thumbPendingUrl = null;
       state.thumbPendingKey = null;
+      state.thumbFailedUrl = null;
+      state.thumbFailedKey = null;
       setThumbEmpty();
+      return;
+    }
+
+    if (!force && url === state.thumbFailedUrl && key === state.thumbFailedKey) {
       return;
     }
 
@@ -237,12 +245,22 @@
         if (requestId !== state.thumbRequest) {
           return;
         }
-        state.thumbPendingUrl = null;
-        state.thumbPendingKey = null;
-        if (!state.thumbUrl) {
-          renderThumb(null);
-        }
+        markThumbFailed(url, key);
       });
+  }
+
+  function markThumbFailed(url, key) {
+    clearThumbRetry();
+    state.thumbPendingUrl = null;
+    state.thumbPendingKey = null;
+    state.thumbFailedUrl = url;
+    state.thumbFailedKey = key;
+    if (!state.thumbUrl) {
+      state.thumbUrl = null;
+      state.thumbKey = null;
+      revokeThumbObjectUrl();
+      setThumbEmpty();
+    }
   }
 
   function renderThumbBlob(url, key, blob, requestId) {
@@ -277,6 +295,8 @@
       state.thumbObjectUrl = objectUrl;
       state.thumbPendingUrl = null;
       state.thumbPendingKey = null;
+      state.thumbFailedUrl = null;
+      state.thumbFailedKey = null;
       state.thumbSlot.removeAttribute("aria-busy");
       state.thumbSlot.removeAttribute("aria-label");
       if (oldObjectUrl) {
@@ -288,11 +308,7 @@
       if (requestId !== state.thumbRequest) {
         return;
       }
-      state.thumbPendingUrl = null;
-      state.thumbPendingKey = null;
-      if (!state.thumbUrl) {
-        renderThumb(null);
-      }
+      markThumbFailed(url, key);
     };
     nextImage.src = objectUrl;
   }

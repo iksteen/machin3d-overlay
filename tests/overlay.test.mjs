@@ -199,6 +199,37 @@ test("renderThumb refetches when the thumbnail task changes without a URL change
   assert.equal(state.thumbPendingKey, "new-task");
 });
 
+test("renderThumb stops re-fetching when the server reports the thumbnail as unavailable", async () => {
+  const fetches = [];
+  const { state, renderThumb } = loadOverlay({
+    fetch: (url, options) => {
+      fetches.push({ url, options });
+      return Promise.resolve({
+        ok: false,
+        status: 404,
+        headers: { get: () => null },
+        blob: () => Promise.reject(new Error("not called")),
+      });
+    },
+  });
+
+  renderThumb("/devices/printer-a/thumbnail", "task-1");
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  await new Promise((resolve) => setTimeout(resolve, 0));
+
+  assert.equal(fetches.length, 1);
+  assert.equal(state.thumbFailedUrl, "/devices/printer-a/thumbnail");
+  assert.equal(state.thumbFailedKey, "task-1");
+
+  renderThumb("/devices/printer-a/thumbnail", "task-1");
+  renderThumb("/devices/printer-a/thumbnail", "task-1");
+
+  assert.equal(fetches.length, 1, "repeated calls with the same key should not re-fetch");
+
+  renderThumb("/devices/printer-a/thumbnail", "task-2");
+  assert.equal(fetches.length, 2, "a new key should retry");
+});
+
 test("renderConnectionBubble exposes printer connection freshness", () => {
   const { state, renderConnectionBubble } = loadOverlay();
   const bubble = state.connectionBubble;
