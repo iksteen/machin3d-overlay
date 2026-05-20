@@ -102,8 +102,11 @@ impl ServiceGraph {
         )
         .await?;
         let video_endpoints = resolve_video_endpoints(&registry).await?;
-        let (video, video_worker_events) =
-            VideoStreams::new(registry.clone(), video_endpoints.endpoints_by_device)?;
+        let (video, video_worker_events) = VideoStreams::new(
+            registry.clone(),
+            video_endpoints.endpoints_by_device,
+            shutdown.clone(),
+        )?;
         let thumbnail =
             ThumbnailService::new(mqtt.clone(), live.clone(), cloud.clone(), registry.clone());
         let state = AppState::new(

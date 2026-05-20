@@ -39,10 +39,6 @@ impl VideoWorkerHandle {
     pub(super) fn is_finished(&self) -> bool {
         self.finished.load(Ordering::SeqCst)
     }
-
-    pub(super) fn abort(&self) {
-        self.abort.abort();
-    }
 }
 
 impl Drop for VideoWorkerHandle {

@@ -25,7 +25,7 @@ use tokio_tungstenite::{
 };
 use tracing::{debug, warn};
 
-use crate::snapmaker::SnapmakerEndpoint;
+use crate::{service::ShutdownReceiver, snapmaker::SnapmakerEndpoint};
 
 use super::stream::DeviceVideoStream;
 
@@ -33,6 +33,9 @@ const POLL_INTERVAL: Duration = Duration::from_millis(250);
 const POLL_TIMEOUT: Duration = Duration::from_secs(8);
 const RETRY_INITIAL_DELAY: Duration = Duration::from_secs(2);
 const RETRY_MAX_DELAY: Duration = Duration::from_secs(30);
+/// Tight overall budget for the stop_monitor cleanup so we don't blow the
+/// parent shutdown grace period (5s by default).
+const STOP_MONITOR_BUDGET: Duration = Duration::from_secs(3);
 /// The `domain` parameter is used by Snapmaker's camera daemon to track which
 /// client requested the monitor mode. A unique value keeps stop requests from
 /// other clients (e.g. Snapmaker Orca) from killing our stream and vice
@@ -42,6 +45,7 @@ const MONITOR_DOMAIN: &str = "bambu-overlay";
 pub(super) async fn run_snapmaker_stream_worker(
     endpoint: SnapmakerEndpoint,
     stream: Arc<DeviceVideoStream>,
+    mut shutdown: ShutdownReceiver,
 ) {
     let url = format!(
         "http://{host}:{port}/server/files/camera/monitor.jpg",
@@ -74,7 +78,11 @@ pub(super) async fn run_snapmaker_stream_worker(
     let mut last_modified: Option<String> = None;
 
     while stream.clients.load(Ordering::SeqCst) > 0 {
-        match poll_once(&client, &url, last_modified.as_deref(), &stream).await {
+        let attempt = tokio::select! {
+            result = poll_once(&client, &url, last_modified.as_deref(), &stream) => result,
+            _ = shutdown.cancelled() => break,
+        };
+        match attempt {
             Ok(outcome) => {
                 if let Some(value) = outcome.last_modified {
                     last_modified = Some(value);
@@ -83,7 +91,10 @@ pub(super) async fn run_snapmaker_stream_worker(
                     let _ = stream.frames.send(bytes);
                 }
                 delay = RETRY_INITIAL_DELAY;
-                sleep_or_no_clients(&stream, POLL_INTERVAL).await;
+                tokio::select! {
+                    _ = sleep_or_no_clients(&stream, POLL_INTERVAL) => {}
+                    _ = shutdown.cancelled() => break,
+                }
             }
             Err(error) => {
                 if stream.clients.load(Ordering::SeqCst) == 0 {
@@ -94,18 +105,31 @@ pub(super) async fn run_snapmaker_stream_worker(
                     error = %error_chain(&error),
                     "Snapmaker camera poll failed"
                 );
-                sleep_or_no_clients(&stream, delay).await;
+                tokio::select! {
+                    _ = sleep_or_no_clients(&stream, delay) => {}
+                    _ = shutdown.cancelled() => break,
+                }
                 delay = (delay + delay / 2).min(RETRY_MAX_DELAY);
             }
         }
     }
 
-    if let Err(error) = control_camera(&endpoint, "camera.stop_monitor").await {
-        warn!(
+    match tokio::time::timeout(
+        STOP_MONITOR_BUDGET,
+        control_camera(&endpoint, "camera.stop_monitor"),
+    )
+    .await
+    {
+        Ok(Ok(())) => debug!(device_id = %stream.device_id, "Snapmaker camera monitor stopped"),
+        Ok(Err(error)) => warn!(
             device_id = %stream.device_id,
             error = %error_chain(&error),
             "Snapmaker camera stop_monitor failed"
-        );
+        ),
+        Err(_) => warn!(
+            device_id = %stream.device_id,
+            "Snapmaker camera stop_monitor timed out"
+        ),
     }
 }
 

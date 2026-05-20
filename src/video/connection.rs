@@ -11,7 +11,7 @@ use tokio::{
 };
 use tracing::{info, warn};
 
-use crate::device_tls;
+use crate::{device_tls, service::ShutdownReceiver};
 
 use super::{
     endpoint::VideoEndpoint,
@@ -26,10 +26,18 @@ const READ_TIMEOUT: Duration = Duration::from_secs(15);
 const RETRY_INITIAL_DELAY: Duration = Duration::from_secs(1);
 const RETRY_MAX_DELAY: Duration = Duration::from_secs(30);
 
-pub(super) async fn run_stream_worker(state: Arc<VideoState>, stream: Arc<DeviceVideoStream>) {
+pub(super) async fn run_stream_worker(
+    state: Arc<VideoState>,
+    stream: Arc<DeviceVideoStream>,
+    mut shutdown: ShutdownReceiver,
+) {
     let mut delay = RETRY_INITIAL_DELAY;
     while stream.clients.load(Ordering::SeqCst) > 0 {
-        match run_stream_attempt(&state, &stream).await {
+        let attempt = tokio::select! {
+            result = run_stream_attempt(&state, &stream) => result,
+            _ = shutdown.cancelled() => return,
+        };
+        match attempt {
             Ok(()) => delay = RETRY_INITIAL_DELAY,
             Err(error) => {
                 if stream.clients.load(Ordering::SeqCst) == 0 {
@@ -40,7 +48,10 @@ pub(super) async fn run_stream_worker(state: Arc<VideoState>, stream: Arc<Device
                     error = %error_chain(&error),
                     "video stream disconnected"
                 );
-                sleep_or_no_clients(&stream, delay).await;
+                tokio::select! {
+                    _ = sleep_or_no_clients(&stream, delay) => {}
+                    _ = shutdown.cancelled() => return,
+                }
                 delay = (delay + delay / 2).min(RETRY_MAX_DELAY);
             }
         }

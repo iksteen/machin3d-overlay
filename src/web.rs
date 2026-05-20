@@ -149,7 +149,8 @@ mod tests {
             }],
             Vec::new(),
         );
-        let (video, _video_events) = VideoStreams::new(registry.clone(), HashMap::new()).unwrap();
+        let (video, _video_events) =
+            VideoStreams::new(registry.clone(), HashMap::new(), Shutdown::new()).unwrap();
         let thumbnail =
             ThumbnailService::new(mqtt.clone(), live.clone(), None, registry.clone());
         AppState::new(live, registry, video, thumbnail, Shutdown::new())

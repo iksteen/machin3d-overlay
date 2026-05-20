@@ -23,7 +23,7 @@ use crate::{
     backend::Backend,
     device_tls,
     devices::{DeviceEntry, DeviceRegistry},
-    service::ShutdownReceiver,
+    service::{Shutdown, ShutdownReceiver},
 };
 
 use super::{
@@ -54,6 +54,7 @@ pub(super) struct VideoState {
     pub(super) device_streams: Mutex<HashMap<String, Arc<DeviceVideoStream>>>,
     pub(super) remembered_endpoints: Mutex<HashMap<String, VideoEndpoint>>,
     worker_tx: mpsc::Sender<VideoWorkerTask>,
+    shutdown: Shutdown,
 }
 
 pub(super) struct DeviceVideoStream {
@@ -77,6 +78,7 @@ impl VideoStreams {
     pub(crate) fn new(
         registry: DeviceRegistry,
         endpoints_by_device: HashMap<String, Vec<VideoEndpoint>>,
+        shutdown: Shutdown,
     ) -> Result<(Self, VideoWorkerEvents)> {
         let tls = device_tls::tokio_connector()?;
         let (worker_tx, worker_rx) = mpsc::channel(WORKER_QUEUE_CAPACITY);
@@ -88,6 +90,7 @@ impl VideoStreams {
                 device_streams: Mutex::new(HashMap::new()),
                 remembered_endpoints: Mutex::new(HashMap::new()),
                 worker_tx,
+                shutdown,
             }),
         };
         Ok((
@@ -161,7 +164,10 @@ impl VideoStreams {
         loop {
             tokio::select! {
                 _ = shutdown.cancelled() => {
-                    self.abort_workers().await;
+                    // Workers subscribe to the same shutdown via `state.shutdown`
+                    // and exit cooperatively (the Snapmaker worker uses the
+                    // window to send `camera.stop_monitor`). The parent
+                    // `ServiceTasks` grace period will abort us if we exceed it.
                     while let Some(result) = workers.join_next().await {
                         log_worker_observer_result(result);
                     }
@@ -174,20 +180,6 @@ impl VideoStreams {
                     log_worker_observer_result(result);
                 }
             }
-        }
-    }
-
-    async fn abort_workers(&self) {
-        let streams = self
-            .state
-            .device_streams
-            .lock()
-            .await
-            .values()
-            .cloned()
-            .collect::<Vec<_>>();
-        for stream in streams {
-            stream.abort_worker().await;
         }
     }
 
@@ -232,11 +224,12 @@ fn spawn_worker(
         .registry
         .get(&device_id)
         .with_context(|| format!("device `{device_id}` is not known"))?;
+    let shutdown = state.shutdown.subscribe();
     let handle = match entry.backend() {
         Backend::Bambu => {
             let worker_state = Arc::clone(state);
             tokio::spawn(async move {
-                run_stream_worker(worker_state, worker_stream).await;
+                run_stream_worker(worker_state, worker_stream, shutdown).await;
                 finished_for_task.store(true, Ordering::SeqCst);
             })
         }
@@ -246,7 +239,7 @@ fn spawn_worker(
                 .cloned()
                 .with_context(|| format!("Snapmaker device `{device_id}` has no endpoint"))?;
             tokio::spawn(async move {
-                run_snapmaker_stream_worker(endpoint, worker_stream).await;
+                run_snapmaker_stream_worker(endpoint, worker_stream, shutdown).await;
                 finished_for_task.store(true, Ordering::SeqCst);
             })
         }
@@ -332,13 +325,7 @@ impl Drop for VideoSubscriptionGuard {
     }
 }
 
-impl DeviceVideoStream {
-    async fn abort_worker(&self) {
-        if let Some(worker) = self.worker.lock().await.as_ref() {
-            worker.abort();
-        }
-    }
-}
+impl DeviceVideoStream {}
 
 #[cfg(test)]
 mod tests {
@@ -372,6 +359,7 @@ mod tests {
         let (streams, _events) = VideoStreams::new(
             registry,
             HashMap::from([("printer-b".to_owned(), vec![endpoint("192.168.1.50")])]),
+            crate::service::Shutdown::new(),
         )
         .expect("video streams should initialize");
 
