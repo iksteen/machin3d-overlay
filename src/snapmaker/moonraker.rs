@@ -32,6 +32,7 @@ const SUBSCRIBE_OBJECTS: &[&str] = &[
     "virtual_sdcard",
     "print_task_config",
     "gcode_move",
+    "toolhead",
 ];
 
 type Socket = WebSocketStream<MaybeTlsStream<TcpStream>>;
