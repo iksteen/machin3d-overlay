@@ -6,7 +6,7 @@ use std::{
     },
 };
 
-use anyhow::{bail, Result};
+use anyhow::{anyhow, bail, Context, Result};
 use bytes::Bytes;
 use tokio::{
     sync::{
@@ -19,12 +19,17 @@ use tokio::{
 use tokio_native_tls::TlsConnector;
 use tracing::error;
 
-use crate::{device_tls, devices::DeviceRegistry, service::ShutdownReceiver};
+use crate::{
+    backend::Backend,
+    device_tls,
+    devices::{DeviceEntry, DeviceRegistry},
+    service::ShutdownReceiver,
+};
 
 use super::{
     connection::run_stream_worker,
     endpoint::VideoEndpoint,
-    session::resolve_session,
+    snapmaker::run_snapmaker_stream_worker,
     worker::{observe_worker, VideoWorkerExit, VideoWorkerHandle, VideoWorkerTask},
 };
 
@@ -94,12 +99,8 @@ impl VideoStreams {
     }
 
     pub async fn subscribe(&self, device_id: Option<&str>) -> Result<VideoSubscription> {
-        if self.state.endpoints_by_device.is_empty() {
-            bail!("video stream is disabled; set at least one --bbl-video-device");
-        }
-
-        let session = resolve_session(&self.state, device_id).await?;
-        let stream = self.device_stream(&session.device_id).await;
+        let device_id = self.select_device(device_id)?;
+        let stream = self.device_stream(&device_id).await;
         let receiver = stream.frames.subscribe();
         stream.clients.fetch_add(1, Ordering::SeqCst);
         let guard = VideoSubscriptionGuard {
@@ -114,7 +115,39 @@ impl VideoStreams {
     }
 
     pub async fn known_device_ids(&self) -> HashSet<String> {
-        self.state.endpoints_by_device.keys().cloned().collect()
+        self.state
+            .registry
+            .entries()
+            .iter()
+            .filter(|entry| device_has_video(&self.state, entry))
+            .map(|entry| entry.id().to_owned())
+            .collect()
+    }
+
+    fn select_device(&self, requested: Option<&str>) -> Result<String> {
+        let requested = requested.map(str::trim).filter(|id| !id.is_empty());
+        if let Some(requested) = requested {
+            let entry = self
+                .state
+                .registry
+                .get(requested)
+                .with_context(|| format!("device `{requested}` is not known"))?;
+            if !device_has_video(&self.state, entry) {
+                bail!(missing_video_message(&self.state, entry));
+            }
+            return Ok(entry.id().to_owned());
+        }
+        self.state
+            .registry
+            .entries()
+            .iter()
+            .find(|entry| device_has_video(&self.state, entry))
+            .map(|entry| entry.id().to_owned())
+            .ok_or_else(|| {
+                anyhow!(
+                    "video stream is disabled; set at least one --bbl-video-device or --snap-device"
+                )
+            })
     }
 
     pub(crate) async fn watch_workers(
@@ -193,12 +226,31 @@ fn spawn_worker(
     let finished = Arc::new(AtomicBool::new(false));
     let finished_for_task = Arc::clone(&finished);
     let device_id = stream.device_id.clone();
-    let worker_state = Arc::clone(state);
     let worker_stream = Arc::clone(stream);
-    let handle = tokio::spawn(async move {
-        run_stream_worker(worker_state, worker_stream).await;
-        finished_for_task.store(true, Ordering::SeqCst);
-    });
+
+    let entry = state
+        .registry
+        .get(&device_id)
+        .with_context(|| format!("device `{device_id}` is not known"))?;
+    let handle = match entry.backend() {
+        Backend::Bambu => {
+            let worker_state = Arc::clone(state);
+            tokio::spawn(async move {
+                run_stream_worker(worker_state, worker_stream).await;
+                finished_for_task.store(true, Ordering::SeqCst);
+            })
+        }
+        Backend::Snapmaker => {
+            let endpoint = entry
+                .snapmaker_endpoint()
+                .cloned()
+                .with_context(|| format!("Snapmaker device `{device_id}` has no endpoint"))?;
+            tokio::spawn(async move {
+                run_snapmaker_stream_worker(endpoint, worker_stream).await;
+                finished_for_task.store(true, Ordering::SeqCst);
+            })
+        }
+    };
     let abort = handle.abort_handle();
     if let Err(error) = state.worker_tx.try_send(VideoWorkerTask {
         device_id,
@@ -214,6 +266,37 @@ fn spawn_worker(
         bail!("video worker lifecycle monitor queue is {reason}");
     }
     Ok(VideoWorkerHandle::new(abort, finished))
+}
+
+fn device_has_video(state: &VideoState, entry: &DeviceEntry) -> bool {
+    match entry.backend() {
+        Backend::Bambu => {
+            state.endpoints_by_device.contains_key(entry.id()) && entry.has_access_code()
+        }
+        Backend::Snapmaker => entry.snapmaker_endpoint().is_some(),
+    }
+}
+
+fn missing_video_message(state: &VideoState, entry: &DeviceEntry) -> String {
+    match entry.backend() {
+        Backend::Bambu => {
+            if !state.endpoints_by_device.contains_key(entry.id()) {
+                format!(
+                    "device `{}` has no known video endpoint",
+                    entry.id()
+                )
+            } else {
+                format!(
+                    "device `{}` does not include dev_access_code",
+                    entry.id()
+                )
+            }
+        }
+        Backend::Snapmaker => format!(
+            "device `{}` is a Snapmaker without a configured Moonraker endpoint",
+            entry.id()
+        ),
+    }
 }
 
 fn log_worker_observer_result(

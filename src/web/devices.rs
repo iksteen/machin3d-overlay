@@ -48,7 +48,7 @@ fn known_devices_payload(
             .iter()
             .map(|entry| {
                 let device = entry.device();
-                let has_video = entry.has_access_code() && runtime_video_ids.contains(entry.id());
+                let has_video = runtime_video_ids.contains(entry.id());
 
                 KnownDevicePayload {
                     id: device.id.clone(),

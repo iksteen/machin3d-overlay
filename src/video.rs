@@ -3,6 +3,7 @@ mod endpoint;
 mod probe;
 mod protocol;
 mod session;
+mod snapmaker;
 mod stream;
 mod worker;
 
