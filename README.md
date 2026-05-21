@@ -161,10 +161,22 @@ WebSocket worker that subscribes to `print_stats`, `display_status`,
 `extruder[0..3]`, `heater_bed`, `virtual_sdcard`, and `print_task_config`, and
 feeds the shared overlay state.
 
-Snapmaker support in this release covers state only: print progress, layer
-counts, temperatures, and the active tool. Video and thumbnails arrive in a
-follow-up release. Bambu Cloud is not required for Snapmaker — `serve` works
-without a token file when only `--snap-device` is configured.
+State, thumbnails, and the camera stream are all wired up. Bambu Cloud is not
+required for Snapmaker — `serve` works without a token file when only
+`--snap-device` is configured.
+
+### Camera caveat
+
+The U1's camera only writes fresh frames to `monitor.jpg` while its camera
+daemon is in "monitor" mode. The overlay polls that file and serves it as
+MJPEG, which means fresh frames flow only while the daemon is awake.
+
+In practice the daemon is awake during a print and while Snapmaker Orca's
+camera viewer is open on the same network; outside those, `monitor.jpg`
+stays frozen on the last captured frame, and so does the overlay's video.
+The overlay does send `camera.start_monitor` when it begins streaming, but
+that request alone does not reliably wake the daemon — the conditions that
+do are still being investigated.
 
 ## Video
 
