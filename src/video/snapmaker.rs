@@ -27,7 +27,7 @@ use tracing::{debug, warn};
 
 use crate::{service::ShutdownReceiver, snapmaker::SnapmakerEndpoint};
 
-use super::stream::DeviceVideoStream;
+use super::{source::SnapmakerVideoSource, stream::DeviceVideoStream};
 
 const POLL_INTERVAL: Duration = Duration::from_millis(250);
 const POLL_TIMEOUT: Duration = Duration::from_secs(8);
@@ -43,10 +43,11 @@ const STOP_MONITOR_BUDGET: Duration = Duration::from_secs(3);
 const MONITOR_DOMAIN: &str = "bambu-overlay";
 
 pub(super) async fn run_snapmaker_stream_worker(
-    endpoint: SnapmakerEndpoint,
+    source: &SnapmakerVideoSource,
     stream: Arc<DeviceVideoStream>,
     mut shutdown: ShutdownReceiver,
 ) {
+    let endpoint = &source.endpoint;
     let url = format!(
         "http://{host}:{port}/server/files/camera/monitor.jpg",
         host = endpoint.host,
@@ -64,7 +65,7 @@ pub(super) async fn run_snapmaker_stream_worker(
         }
     };
 
-    if let Err(error) = control_camera(&endpoint, "camera.start_monitor").await {
+    if let Err(error) = control_camera(endpoint, "camera.start_monitor").await {
         warn!(
             device_id = %stream.device_id,
             error = %error_chain(&error),
@@ -116,7 +117,7 @@ pub(super) async fn run_snapmaker_stream_worker(
 
     match tokio::time::timeout(
         STOP_MONITOR_BUDGET,
-        control_camera(&endpoint, "camera.stop_monitor"),
+        control_camera(endpoint, "camera.stop_monitor"),
     )
     .await
     {

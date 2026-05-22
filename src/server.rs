@@ -14,7 +14,7 @@ use crate::{
     service::{wait_for_process_shutdown_signal, ServiceTasks, Shutdown},
     snapmaker::{self, SnapmakerDeviceConfig},
     thumbnail::ThumbnailService,
-    video::{VideoEndpoint, VideoStreams, VideoWorkerEvents},
+    video::{self, VideoEndpoint, VideoStreams, VideoWorkerEvents},
     web::{serve_http, AppState},
 };
 
@@ -102,11 +102,9 @@ impl ServiceGraph {
         )
         .await?;
         let video_endpoints = resolve_video_endpoints(&registry).await?;
-        let (video, video_worker_events) = VideoStreams::new(
-            registry.clone(),
-            video_endpoints.endpoints_by_device,
-            shutdown.clone(),
-        )?;
+        let video_sources =
+            video::collect_sources(&registry, &video_endpoints.endpoints_by_device)?;
+        let (video, video_worker_events) = VideoStreams::new(video_sources, shutdown.clone())?;
         let thumbnail =
             ThumbnailService::new(mqtt.clone(), live.clone(), cloud.clone(), registry.clone());
         let state = AppState::new(

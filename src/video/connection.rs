@@ -1,7 +1,4 @@
-use std::{
-    sync::{atomic::Ordering, Arc},
-    time::Duration,
-};
+use std::{sync::atomic::Ordering, time::Duration};
 
 use anyhow::{bail, ensure, Context, Result};
 use bytes::Bytes;
@@ -17,8 +14,8 @@ use super::{
     endpoint::VideoEndpoint,
     probe::connect_video_tcp,
     protocol::{auth_packet, is_jpeg, MAX_FRAME_SIZE},
-    session::{candidate_endpoints, remember_endpoint, resolve_session, VideoSession},
-    stream::{DeviceVideoStream, VideoState},
+    source::BambuVideoSource,
+    stream::DeviceVideoStream,
 };
 
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
@@ -27,14 +24,14 @@ const RETRY_INITIAL_DELAY: Duration = Duration::from_secs(1);
 const RETRY_MAX_DELAY: Duration = Duration::from_secs(30);
 
 pub(super) async fn run_stream_worker(
-    state: Arc<VideoState>,
-    stream: Arc<DeviceVideoStream>,
+    source: &BambuVideoSource,
+    stream: std::sync::Arc<DeviceVideoStream>,
     mut shutdown: ShutdownReceiver,
 ) {
     let mut delay = RETRY_INITIAL_DELAY;
     while stream.clients.load(Ordering::SeqCst) > 0 {
         let attempt = tokio::select! {
-            result = run_stream_attempt(&state, &stream) => result,
+            result = run_stream_attempt(source, &stream) => result,
             _ = shutdown.cancelled() => return,
         };
         match attempt {
@@ -58,18 +55,20 @@ pub(super) async fn run_stream_worker(
     }
 }
 
-async fn run_stream_attempt(state: &VideoState, stream: &DeviceVideoStream) -> Result<()> {
-    let session = resolve_session(state, Some(&stream.device_id)).await?;
-    let endpoints = candidate_endpoints(state, &session.device_id).await;
+async fn run_stream_attempt(
+    source: &BambuVideoSource,
+    stream: &DeviceVideoStream,
+) -> Result<()> {
+    let endpoints = candidate_endpoints(source).await;
     let mut last_error = None;
 
     for endpoint in endpoints {
-        match stream_from_endpoint(state, stream, &session, &endpoint).await {
+        match stream_from_endpoint(source, stream, &endpoint).await {
             Ok(()) => return Ok(()),
             Err(_) if stream.clients.load(Ordering::SeqCst) == 0 => return Ok(()),
             Err(error) => {
                 warn!(
-                    device_id = %session.device_id,
+                    device_id = %source.device_id,
                     endpoint = %endpoint,
                     error = %error_chain(&error),
                     "video endpoint failed"
@@ -83,17 +82,16 @@ async fn run_stream_attempt(state: &VideoState, stream: &DeviceVideoStream) -> R
 }
 
 async fn stream_from_endpoint(
-    state: &VideoState,
+    source: &BambuVideoSource,
     device_stream: &DeviceVideoStream,
-    session: &VideoSession,
     endpoint: &VideoEndpoint,
 ) -> Result<()> {
     let address = endpoint.address();
     let tcp = connect_video_tcp(endpoint, CONNECT_TIMEOUT, "connecting to video server").await?;
-    let mut socket = authenticate_stream(state, tcp, &address, session).await?;
+    let mut socket = authenticate_stream(source, tcp, &address).await?;
 
     info!(
-        device_id = %session.device_id,
+        device_id = %source.device_id,
         address = %address,
         "connected to printer video stream"
     );
@@ -121,7 +119,7 @@ async fn stream_from_endpoint(
             break;
         }
         if is_jpeg(&frame) {
-            remember_endpoint(state, &session.device_id, endpoint).await;
+            remember_endpoint(source, endpoint).await;
             let _ = device_stream.frames.send(Bytes::from(frame));
         } else {
             warn!("discarding video frame without JPEG magic bytes");
@@ -132,27 +130,26 @@ async fn stream_from_endpoint(
 }
 
 async fn authenticate_stream(
-    state: &VideoState,
+    source: &BambuVideoSource,
     tcp: TcpStream,
     address: &str,
-    session: &VideoSession,
 ) -> Result<tokio_native_tls::TlsStream<TcpStream>> {
-    let mut socket = state
+    let mut socket = source
         .tls
-        .connect(&session.device_id, tcp)
+        .connect(&source.device_id, tcp)
         .await
         .with_context(|| format!("failed TLS handshake with video server at {address}"))?;
     let certificate_device_id = device_tls::peer_device_id(&socket)
         .context("video server certificate did not include a usable common name")?;
-    if certificate_device_id != session.device_id {
+    if certificate_device_id != source.device_id {
         bail!(
             "video endpoint certificate is for device `{certificate_device_id}`, not requested device `{}`",
-            session.device_id
+            source.device_id
         );
     }
 
     socket
-        .write_all(&auth_packet(session.access_code.expose())?)
+        .write_all(&auth_packet(source.access_code.expose())?)
         .await
         .context("failed to send video authentication packet")?;
     socket
@@ -160,6 +157,38 @@ async fn authenticate_stream(
         .await
         .context("failed to flush video authentication packet")?;
     Ok(socket)
+}
+
+async fn candidate_endpoints(source: &BambuVideoSource) -> Vec<VideoEndpoint> {
+    let remembered = source.remembered.lock().await.clone();
+    order_endpoints(source.endpoints.clone(), remembered)
+}
+
+async fn remember_endpoint(source: &BambuVideoSource, endpoint: &VideoEndpoint) {
+    if !source.endpoints.iter().any(|known| known == endpoint) {
+        return;
+    }
+    *source.remembered.lock().await = Some(endpoint.clone());
+}
+
+pub(super) fn order_endpoints(
+    endpoints: Vec<VideoEndpoint>,
+    remembered: Option<VideoEndpoint>,
+) -> Vec<VideoEndpoint> {
+    let Some(remembered) =
+        remembered.filter(|endpoint| endpoints.iter().any(|candidate| candidate == endpoint))
+    else {
+        return endpoints;
+    };
+
+    let mut ordered = Vec::with_capacity(endpoints.len());
+    ordered.push(remembered.clone());
+    ordered.extend(
+        endpoints
+            .into_iter()
+            .filter(|endpoint| endpoint != &remembered),
+    );
+    ordered
 }
 
 async fn sleep_or_no_clients(stream: &DeviceVideoStream, delay: Duration) {
@@ -206,4 +235,36 @@ fn error_chain(error: &anyhow::Error) -> String {
         .map(ToString::to_string)
         .collect::<Vec<_>>()
         .join(": ")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::order_endpoints;
+    use crate::video::endpoint::VideoEndpoint;
+    use std::str::FromStr;
+
+    fn endpoint(value: &str) -> VideoEndpoint {
+        VideoEndpoint::from_str(value).expect("endpoint should parse")
+    }
+
+    #[test]
+    fn remembered_video_endpoint_is_tried_first() {
+        let endpoints = order_endpoints(
+            vec![
+                endpoint("192.168.1.50"),
+                endpoint("192.168.1.51:6001"),
+                endpoint("192.168.1.52"),
+            ],
+            Some(endpoint("192.168.1.51:6001")),
+        );
+
+        assert_eq!(
+            endpoints,
+            [
+                endpoint("192.168.1.51:6001"),
+                endpoint("192.168.1.50"),
+                endpoint("192.168.1.52"),
+            ]
+        );
+    }
 }

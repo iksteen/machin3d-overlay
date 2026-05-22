@@ -16,20 +16,12 @@ use tokio::{
     },
     task::JoinSet,
 };
-use tokio_native_tls::TlsConnector;
 use tracing::error;
 
-use crate::{
-    backend::Backend,
-    device_tls,
-    devices::{DeviceEntry, DeviceRegistry},
-    service::{Shutdown, ShutdownReceiver},
-};
+use crate::service::{Shutdown, ShutdownReceiver};
 
 use super::{
-    connection::run_stream_worker,
-    endpoint::VideoEndpoint,
-    snapmaker::run_snapmaker_stream_worker,
+    source::VideoSource,
     worker::{observe_worker, VideoWorkerExit, VideoWorkerHandle, VideoWorkerTask},
 };
 
@@ -47,12 +39,9 @@ pub struct VideoWorkerEvents {
     receiver: mpsc::Receiver<VideoWorkerTask>,
 }
 
-pub(super) struct VideoState {
-    pub(super) registry: DeviceRegistry,
-    pub(super) endpoints_by_device: HashMap<String, Vec<VideoEndpoint>>,
-    pub(super) tls: TlsConnector,
-    pub(super) device_streams: Mutex<HashMap<String, Arc<DeviceVideoStream>>>,
-    pub(super) remembered_endpoints: Mutex<HashMap<String, VideoEndpoint>>,
+struct VideoState {
+    sources: HashMap<String, Arc<VideoSource>>,
+    device_streams: Mutex<HashMap<String, Arc<DeviceVideoStream>>>,
     worker_tx: mpsc::Sender<VideoWorkerTask>,
     shutdown: Shutdown,
 }
@@ -76,19 +65,14 @@ struct VideoSubscriptionGuard {
 
 impl VideoStreams {
     pub(crate) fn new(
-        registry: DeviceRegistry,
-        endpoints_by_device: HashMap<String, Vec<VideoEndpoint>>,
+        sources: HashMap<String, Arc<VideoSource>>,
         shutdown: Shutdown,
     ) -> Result<(Self, VideoWorkerEvents)> {
-        let tls = device_tls::tokio_connector()?;
         let (worker_tx, worker_rx) = mpsc::channel(WORKER_QUEUE_CAPACITY);
         let streams = Self {
             state: Arc::new(VideoState {
-                registry,
-                endpoints_by_device,
-                tls,
+                sources,
                 device_streams: Mutex::new(HashMap::new()),
-                remembered_endpoints: Mutex::new(HashMap::new()),
                 worker_tx,
                 shutdown,
             }),
@@ -118,39 +102,23 @@ impl VideoStreams {
     }
 
     pub async fn known_device_ids(&self) -> HashSet<String> {
-        self.state
-            .registry
-            .entries()
-            .iter()
-            .filter(|entry| device_has_video(&self.state, entry))
-            .map(|entry| entry.id().to_owned())
-            .collect()
+        self.state.sources.keys().cloned().collect()
     }
 
     fn select_device(&self, requested: Option<&str>) -> Result<String> {
         let requested = requested.map(str::trim).filter(|id| !id.is_empty());
         if let Some(requested) = requested {
-            let entry = self
-                .state
-                .registry
-                .get(requested)
-                .with_context(|| format!("device `{requested}` is not known"))?;
-            if !device_has_video(&self.state, entry) {
-                bail!(missing_video_message(&self.state, entry));
+            if self.state.sources.contains_key(requested) {
+                return Ok(requested.to_owned());
             }
-            return Ok(entry.id().to_owned());
+            bail!("device `{requested}` has no configured video source");
         }
         self.state
-            .registry
-            .entries()
-            .iter()
-            .find(|entry| device_has_video(&self.state, entry))
-            .map(|entry| entry.id().to_owned())
-            .ok_or_else(|| {
-                anyhow!(
-                    "video stream is disabled; set at least one --bbl-video-device or --snap-device"
-                )
-            })
+            .sources
+            .values()
+            .next()
+            .map(|source| source.device_id().to_owned())
+            .ok_or_else(|| anyhow!("no devices have configured video sources"))
     }
 
     pub(crate) async fn watch_workers(
@@ -165,9 +133,10 @@ impl VideoStreams {
             tokio::select! {
                 _ = shutdown.cancelled() => {
                     // Workers subscribe to the same shutdown via `state.shutdown`
-                    // and exit cooperatively (the Snapmaker worker uses the
-                    // window to send `camera.stop_monitor`). The parent
-                    // `ServiceTasks` grace period will abort us if we exceed it.
+                    // and exit cooperatively (e.g. the Snapmaker worker uses
+                    // the window to send `camera.stop_monitor`). The parent
+                    // `ServiceTasks` grace period will abort us if we exceed
+                    // it.
                     while let Some(result) = workers.join_next().await {
                         log_worker_observer_result(result);
                     }
@@ -219,31 +188,16 @@ fn spawn_worker(
     let finished_for_task = Arc::clone(&finished);
     let device_id = stream.device_id.clone();
     let worker_stream = Arc::clone(stream);
-
-    let entry = state
-        .registry
+    let source = state
+        .sources
         .get(&device_id)
-        .with_context(|| format!("device `{device_id}` is not known"))?;
+        .cloned()
+        .with_context(|| format!("device `{device_id}` has no configured video source"))?;
     let shutdown = state.shutdown.subscribe();
-    let handle = match entry.backend() {
-        Backend::Bambu => {
-            let worker_state = Arc::clone(state);
-            tokio::spawn(async move {
-                run_stream_worker(worker_state, worker_stream, shutdown).await;
-                finished_for_task.store(true, Ordering::SeqCst);
-            })
-        }
-        Backend::Snapmaker => {
-            let endpoint = entry
-                .snapmaker_endpoint()
-                .cloned()
-                .with_context(|| format!("Snapmaker device `{device_id}` has no endpoint"))?;
-            tokio::spawn(async move {
-                run_snapmaker_stream_worker(endpoint, worker_stream, shutdown).await;
-                finished_for_task.store(true, Ordering::SeqCst);
-            })
-        }
-    };
+    let handle = tokio::spawn(async move {
+        source.run(worker_stream, shutdown).await;
+        finished_for_task.store(true, Ordering::SeqCst);
+    });
     let abort = handle.abort_handle();
     if let Err(error) = state.worker_tx.try_send(VideoWorkerTask {
         device_id,
@@ -259,37 +213,6 @@ fn spawn_worker(
         bail!("video worker lifecycle monitor queue is {reason}");
     }
     Ok(VideoWorkerHandle::new(abort, finished))
-}
-
-fn device_has_video(state: &VideoState, entry: &DeviceEntry) -> bool {
-    match entry.backend() {
-        Backend::Bambu => {
-            state.endpoints_by_device.contains_key(entry.id()) && entry.has_access_code()
-        }
-        Backend::Snapmaker => entry.snapmaker_endpoint().is_some(),
-    }
-}
-
-fn missing_video_message(state: &VideoState, entry: &DeviceEntry) -> String {
-    match entry.backend() {
-        Backend::Bambu => {
-            if !state.endpoints_by_device.contains_key(entry.id()) {
-                format!(
-                    "device `{}` has no known video endpoint",
-                    entry.id()
-                )
-            } else {
-                format!(
-                    "device `{}` does not include dev_access_code",
-                    entry.id()
-                )
-            }
-        }
-        Backend::Snapmaker => format!(
-            "device `{}` is a Snapmaker without a configured Moonraker endpoint",
-            entry.id()
-        ),
-    }
 }
 
 fn log_worker_observer_result(
@@ -331,7 +254,13 @@ impl DeviceVideoStream {}
 mod tests {
     use std::{collections::HashMap, str::FromStr};
 
-    use crate::{bambu::CloudDevice, devices::DeviceRegistry, secret::Secret, video::VideoEndpoint};
+    use crate::{
+        bambu::CloudDevice,
+        devices::DeviceRegistry,
+        secret::Secret,
+        service::Shutdown,
+        video::{endpoint::VideoEndpoint, source::collect_sources},
+    };
 
     use super::VideoStreams;
 
@@ -340,7 +269,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn subscribe_rejects_device_without_endpoint_even_when_video_is_enabled() {
+    async fn subscribe_rejects_device_without_a_configured_source() {
         let registry = DeviceRegistry::new(
             vec![
                 CloudDevice {
@@ -356,19 +285,18 @@ mod tests {
             ],
             Vec::new(),
         );
-        let (streams, _events) = VideoStreams::new(
-            registry,
-            HashMap::from([("printer-b".to_owned(), vec![endpoint("192.168.1.50")])]),
-            crate::service::Shutdown::new(),
-        )
-        .expect("video streams should initialize");
+        let bambu_endpoints =
+            HashMap::from([("printer-b".to_owned(), vec![endpoint("192.168.1.50")])]);
+        let sources = collect_sources(&registry, &bambu_endpoints).expect("sources build");
+        let (streams, _events) =
+            VideoStreams::new(sources, Shutdown::new()).expect("video streams");
 
         let error = match streams.subscribe(Some("printer-a")).await {
-            Ok(_) => panic!("device without endpoint should not subscribe"),
+            Ok(_) => panic!("device without a source should not subscribe"),
             Err(error) => error,
         };
 
         assert!(error.to_string().contains("printer-a"));
-        assert!(error.to_string().contains("no known video endpoint"));
+        assert!(error.to_string().contains("no configured video source"));
     }
 }
