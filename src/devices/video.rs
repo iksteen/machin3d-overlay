@@ -8,7 +8,8 @@ use tokio::{sync::Semaphore, task::JoinSet};
 use tracing::{debug, info};
 
 use crate::{
-    local::{Endpoint, LocalDevice},
+    bambu::local::BambuLocalDevice,
+    endpoint::Endpoint,
     video::{infer_video_device_id, probe_video_endpoint, VideoEndpoint, DEFAULT_VIDEO_PORT},
 };
 
@@ -188,7 +189,7 @@ pub(crate) async fn resolve_video_endpoints(
     Ok(resolved)
 }
 
-fn local_video_endpoint(device: &LocalDevice) -> VideoEndpoint {
+fn local_video_endpoint(device: &BambuLocalDevice) -> VideoEndpoint {
     VideoEndpoint::new(
         Endpoint::new(device.endpoint.host().to_owned(), DEFAULT_VIDEO_PORT),
         None,
@@ -198,9 +199,11 @@ fn local_video_endpoint(device: &LocalDevice) -> VideoEndpoint {
 #[cfg(test)]
 mod tests {
     use crate::{
-        bambu::CloudDevice,
+        bambu::{
+            local::{BambuLocalDevice, BambuLocalEndpoint},
+            BambuCloudDevice,
+        },
         devices::{access::BindCatalog, video::ExplicitVideoEndpoints, DeviceRegistryBuilder},
-        local::{LocalDevice, LocalEndpoint},
         video::VideoEndpoint,
     };
 
@@ -216,9 +219,9 @@ mod tests {
 
     #[test]
     fn local_video_endpoint_uses_host_and_default_port() {
-        let device = LocalDevice {
+        let device = BambuLocalDevice {
             id: "printer-a".to_owned(),
-            endpoint: LocalEndpoint::new("192.168.1.50", 8883, "12345678"),
+            endpoint: BambuLocalEndpoint::new("192.168.1.50", 8883, "12345678"),
         };
 
         assert_eq!(local_video_endpoint(&device), endpoint("192.168.1.50:6000"));
@@ -239,9 +242,9 @@ mod tests {
     #[tokio::test]
     async fn explicit_video_requires_matching_known_device() {
         let mut builder = DeviceRegistryBuilder::new(
-            vec![CloudDevice {
+            vec![BambuCloudDevice {
                 id: Some("printer-b".to_owned()),
-                ..CloudDevice::default()
+                ..BambuCloudDevice::default()
             }],
             Vec::new(),
             Vec::new(),
@@ -265,9 +268,9 @@ mod tests {
     #[tokio::test]
     async fn explicit_video_access_code_updates_cloud_device() {
         let mut builder = DeviceRegistryBuilder::new(
-            vec![CloudDevice {
+            vec![BambuCloudDevice {
                 id: Some("printer-a".to_owned()),
-                ..CloudDevice::default()
+                ..BambuCloudDevice::default()
             }],
             Vec::new(),
             Vec::new(),
@@ -297,9 +300,9 @@ mod tests {
     #[tokio::test]
     async fn explicit_video_loads_bind_when_code_is_missing() {
         let mut builder = DeviceRegistryBuilder::new(
-            vec![CloudDevice {
+            vec![BambuCloudDevice {
                 id: Some("printer-a".to_owned()),
-                ..CloudDevice::default()
+                ..BambuCloudDevice::default()
             }],
             Vec::new(),
             Vec::new(),

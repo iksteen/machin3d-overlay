@@ -10,7 +10,7 @@ use tokio::task::{Id, JoinError, JoinSet};
 use tracing::{debug, error, warn};
 
 use crate::{
-    cloud::CloudSession,
+    bambu::cloud::CloudSession,
     devices::{DeviceCapabilities, DeviceRegistry},
     live::LiveStateStore,
     mqtt::MqttRuntime,

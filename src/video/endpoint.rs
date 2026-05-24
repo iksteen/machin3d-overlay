@@ -1,9 +1,6 @@
 use std::{fmt, str::FromStr};
 
-use crate::{
-    local::{parse_access_code_arg, Endpoint},
-    secret::Secret,
-};
+use crate::{bambu::local::parse_access_code_arg, endpoint::Endpoint, secret::Secret};
 
 pub const DEFAULT_VIDEO_PORT: u16 = 6000;
 
@@ -71,8 +68,8 @@ fn parse_video_endpoint(value: &str) -> std::result::Result<VideoEndpoint, Strin
         ));
     }
 
-    let endpoint =
-        Endpoint::parse_with_default(fields[0].trim(), "video endpoint", DEFAULT_VIDEO_PORT)?;
+    let endpoint = Endpoint::parse(fields[0].trim(), DEFAULT_VIDEO_PORT)
+        .map_err(|error| format!("invalid video endpoint `{value}`: {error}"))?;
     let access_code = parse_access_code_arg(fields.get(1).copied(), "video endpoint", value)?;
     Ok(VideoEndpoint::new(endpoint, access_code))
 }

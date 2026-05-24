@@ -1,5 +1,5 @@
 use std::{
-    env, fs,
+    fs,
     path::{Path, PathBuf},
     sync::OnceLock,
 };
@@ -8,7 +8,11 @@ use anyhow::{bail, Context, Result};
 use chrono::{Duration, Utc};
 use serde::{Deserialize, Serialize};
 
-use crate::{bambu::LoginResponse, secret::Secret, secret_file::write_atomic};
+use crate::{
+    bambu::LoginResponse,
+    secret::Secret,
+    secret_file::{state_path, write_atomic},
+};
 
 static DEFAULT_TOKEN_PATH: OnceLock<PathBuf> = OnceLock::new();
 
@@ -101,19 +105,5 @@ pub fn token_path(token_file: Option<PathBuf>) -> PathBuf {
 }
 
 pub fn default_token_path() -> &'static Path {
-    DEFAULT_TOKEN_PATH.get_or_init(resolve_default_token_path)
-}
-
-fn resolve_default_token_path() -> PathBuf {
-    if let Ok(xdg_state_home) = env::var("XDG_STATE_HOME") {
-        return PathBuf::from(xdg_state_home)
-            .join("bambu-overlay")
-            .join("token.json");
-    }
-    dirs::home_dir()
-        .unwrap_or_else(|| PathBuf::from("."))
-        .join(".local")
-        .join("state")
-        .join("bambu-overlay")
-        .join("token.json")
+    DEFAULT_TOKEN_PATH.get_or_init(|| state_path("token.json"))
 }

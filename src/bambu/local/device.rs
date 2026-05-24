@@ -3,16 +3,16 @@ use std::{fmt, time::Duration};
 use anyhow::{Context, Result};
 use tokio::net::TcpStream;
 
-use crate::{device_tls, secret::Secret};
+use crate::{bambu::device_tls, endpoint::Endpoint, secret::Secret};
 
-use super::{Endpoint, LocalEndpointConfig};
+use super::BambuLocalEndpointConfig;
 
 const LOCAL_MQTT_PROBE_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// Reads the printer's device ID (serial number) from its MQTT-over-TLS
 /// certificate common name. Used at startup so `--bbl-local-device` does not
 /// need the operator to provide the device ID.
-pub async fn infer_local_device_id(device: &LocalEndpointConfig) -> Result<String> {
+pub async fn infer_local_device_id(device: &BambuLocalEndpointConfig) -> Result<String> {
     let endpoint = device.endpoint();
     let address = endpoint.to_string();
     let tcp = tokio::time::timeout(
@@ -37,19 +37,19 @@ pub async fn infer_local_device_id(device: &LocalEndpointConfig) -> Result<Strin
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct LocalEndpoint {
+pub struct BambuLocalEndpoint {
     pub endpoint: Endpoint,
     pub access_code: Secret<String>,
     pub name: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct LocalDevice {
+pub struct BambuLocalDevice {
     pub id: String,
-    pub endpoint: LocalEndpoint,
+    pub endpoint: BambuLocalEndpoint,
 }
 
-impl LocalEndpoint {
+impl BambuLocalEndpoint {
     #[cfg(test)]
     pub fn new(host: impl Into<String>, port: u16, access_code: impl Into<String>) -> Self {
         Self {
@@ -72,13 +72,13 @@ impl LocalEndpoint {
     }
 }
 
-impl fmt::Display for LocalDevice {
+impl fmt::Display for BambuLocalDevice {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(formatter, "{}={}", self.id, self.endpoint)
     }
 }
 
-impl fmt::Display for LocalEndpoint {
+impl fmt::Display for BambuLocalEndpoint {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         self.endpoint.fmt(formatter)
     }

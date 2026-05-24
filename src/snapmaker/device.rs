@@ -1,6 +1,6 @@
 //! Resolved Snapmaker device descriptor.
 
-use crate::{local::Endpoint, secret::Secret, snapmaker::SnapToken};
+use crate::{endpoint::Endpoint, secret::Secret, snapmaker::SnapToken};
 
 pub(crate) type SnapmakerEndpoint = Endpoint;
 

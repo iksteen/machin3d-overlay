@@ -83,10 +83,4 @@ fn read_limited(reader: &mut dyn Read, limit: usize, label: &str) -> Result<Vec<
     Ok(bytes)
 }
 
-fn error_chain(error: &anyhow::Error) -> String {
-    error
-        .chain()
-        .map(ToString::to_string)
-        .collect::<Vec<_>>()
-        .join(": ")
-}
+pub(crate) use crate::errors::error_chain;

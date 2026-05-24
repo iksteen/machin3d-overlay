@@ -6,7 +6,7 @@
 //! must use as the topic prefix once we reconnect over mTLS.
 
 use std::{
-    env, fs,
+    fs,
     path::{Path, PathBuf},
     sync::OnceLock,
 };
@@ -14,7 +14,10 @@ use std::{
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 
-use crate::{secret::Secret, secret_file::write_atomic};
+use crate::{
+    secret::Secret,
+    secret_file::{state_path, write_atomic},
+};
 
 static DEFAULT_TOKEN_PATH: OnceLock<PathBuf> = OnceLock::new();
 
@@ -69,21 +72,7 @@ pub(crate) fn upsert_snap_token(path: &Path, token: SnapToken) -> Result<()> {
 }
 
 pub(crate) fn default_snap_token_path() -> &'static Path {
-    DEFAULT_TOKEN_PATH.get_or_init(resolve_default_path)
-}
-
-fn resolve_default_path() -> PathBuf {
-    if let Ok(xdg_state_home) = env::var("XDG_STATE_HOME") {
-        return PathBuf::from(xdg_state_home)
-            .join("bambu-overlay")
-            .join("snap-tokens.json");
-    }
-    dirs::home_dir()
-        .unwrap_or_else(|| PathBuf::from("."))
-        .join(".local")
-        .join("state")
-        .join("bambu-overlay")
-        .join("snap-tokens.json")
+    DEFAULT_TOKEN_PATH.get_or_init(|| state_path("snap-tokens.json"))
 }
 
 fn write_snap_tokens(path: &Path, tokens: &[SnapToken]) -> Result<()> {

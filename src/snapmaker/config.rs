@@ -6,7 +6,7 @@
 
 use std::str::FromStr;
 
-use crate::local::endpoint::parse_endpoint;
+use crate::endpoint::Endpoint;
 
 use super::SnapmakerEndpoint;
 
@@ -23,14 +23,10 @@ impl FromStr for SnapmakerDeviceConfig {
     fn from_str(value: &str) -> Result<Self, Self::Err> {
         let value = value.trim();
         if value.is_empty() {
-            return Err("invalid --snap-device: host is empty".to_owned());
+            return Err("invalid Snapmaker endpoint: host is empty".to_owned());
         }
-        let endpoint = parse_endpoint(
-            value,
-            value,
-            "Snapmaker endpoint",
-            DEFAULT_MOONRAKER_PORT,
-        )?;
+        let endpoint = Endpoint::parse(value, DEFAULT_MOONRAKER_PORT)
+            .map_err(|error| format!("invalid Snapmaker endpoint `{value}`: {error}"))?;
         Ok(Self { endpoint })
     }
 }

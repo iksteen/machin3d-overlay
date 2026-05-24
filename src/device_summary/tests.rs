@@ -4,7 +4,7 @@ use serde::de::DeserializeOwned;
 use serde_json::{json, Value};
 
 use crate::{
-    bambu::{printer_status_to_live, CloudDevice, PrinterStatus},
+    bambu::{printer_status_to_live, BambuCloudDevice, PrinterStatus},
     devices::KnownDevice,
     live::{ConnectionStatus, DeviceConnection, DeviceLiveState},
 };
@@ -16,7 +16,7 @@ fn decode<T: DeserializeOwned>(value: Value) -> T {
 }
 
 fn device(value: Value) -> KnownDevice {
-    KnownDevice::from_cloud(decode::<CloudDevice>(value)).expect("device should have an ID")
+    KnownDevice::from_cloud(decode::<BambuCloudDevice>(value)).expect("device should have an ID")
 }
 
 fn live(value: Value) -> DeviceLiveState {

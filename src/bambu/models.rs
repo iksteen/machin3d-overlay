@@ -20,11 +20,11 @@ pub struct LoginResponse {
 #[derive(Debug, Clone, Default, Deserialize)]
 pub struct DeviceListResponse {
     #[serde(default)]
-    pub devices: Vec<CloudDevice>,
+    pub devices: Vec<BambuCloudDevice>,
 }
 
 #[derive(Debug, Clone, Default, Deserialize)]
-pub struct CloudDevice {
+pub struct BambuCloudDevice {
     #[serde(default, rename = "dev_id", deserialize_with = "de::optional_string")]
     pub id: Option<String>,
     #[serde(

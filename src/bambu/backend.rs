@@ -8,9 +8,12 @@
 use anyhow::Result;
 
 use crate::{
-    cloud::{cloud_mqtt_startup, CloudSession},
+    bambu::{
+        cloud::{cloud_mqtt_startup, CloudSession},
+        local::BambuLocalDevice,
+    },
     devices::DeviceRegistry,
-    local::{LocalDevice, MqttEndpoint},
+    endpoint::MqttEndpoint,
     mqtt::{supervise_target, MqttRuntime, MqttTarget},
     service::{ServiceTasks, Shutdown},
 };
@@ -51,7 +54,7 @@ fn bambu_cloud_mqtt_ids(registry: &DeviceRegistry) -> Vec<String> {
         .collect()
 }
 
-fn bambu_local_devices(registry: &DeviceRegistry) -> Vec<LocalDevice> {
+fn bambu_local_devices(registry: &DeviceRegistry) -> Vec<BambuLocalDevice> {
     registry
         .bambu_entries()
         .filter_map(|(_, bambu)| bambu.local_mqtt.clone())

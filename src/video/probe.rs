@@ -3,7 +3,7 @@ use std::time::Duration;
 use anyhow::{ensure, Context, Result};
 use tokio::net::TcpStream;
 
-use crate::device_tls;
+use crate::bambu::device_tls;
 
 use super::endpoint::VideoEndpoint;
 

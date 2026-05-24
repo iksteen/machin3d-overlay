@@ -12,7 +12,7 @@ use tokio::sync::Mutex;
 use tokio_native_tls::TlsConnector;
 
 use crate::{
-    device_tls,
+    bambu::device_tls,
     devices::{DeviceCapabilities, DeviceEntry},
     secret::Secret,
     service::ShutdownReceiver,

@@ -1,23 +1,23 @@
 use std::{fmt, str::FromStr};
 
-use crate::{bambu::MQTT_PORT, secret::Secret};
+use crate::{bambu::MQTT_PORT, endpoint::Endpoint, secret::Secret};
 
-use super::{endpoint::parse_endpoint, Endpoint, LocalEndpoint};
+use super::BambuLocalEndpoint;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct LocalEndpointConfig {
+pub struct BambuLocalEndpointConfig {
     pub endpoint: Endpoint,
     pub access_code: Option<Secret<String>>,
     pub name: Option<String>,
 }
 
-impl LocalEndpointConfig {
+impl BambuLocalEndpointConfig {
     pub fn endpoint(&self) -> Endpoint {
         self.endpoint.clone()
     }
 
-    pub fn into_endpoint(self, access_code: Secret<String>) -> LocalEndpoint {
-        LocalEndpoint {
+    pub fn into_endpoint(self, access_code: Secret<String>) -> BambuLocalEndpoint {
+        BambuLocalEndpoint {
             endpoint: self.endpoint,
             access_code,
             name: self.name,
@@ -25,13 +25,13 @@ impl LocalEndpointConfig {
     }
 }
 
-impl fmt::Display for LocalEndpointConfig {
+impl fmt::Display for BambuLocalEndpointConfig {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         self.endpoint.fmt(formatter)
     }
 }
 
-impl FromStr for LocalEndpointConfig {
+impl FromStr for BambuLocalEndpointConfig {
     type Err = String;
 
     fn from_str(value: &str) -> std::result::Result<Self, Self::Err> {
@@ -39,7 +39,7 @@ impl FromStr for LocalEndpointConfig {
     }
 }
 
-fn parse_local_device_arg(value: &str) -> std::result::Result<LocalEndpointConfig, String> {
+fn parse_local_device_arg(value: &str) -> std::result::Result<BambuLocalEndpointConfig, String> {
     let value = value.trim();
     if value.is_empty() {
         return Err("local device must not be empty".to_owned());
@@ -57,18 +57,19 @@ fn parse_local_endpoint_arg(
     value: &str,
     label: &str,
     default_port: u16,
-) -> std::result::Result<LocalEndpointConfig, String> {
+) -> std::result::Result<BambuLocalEndpointConfig, String> {
     let value = value.trim();
     if value.is_empty() {
         return Err(format!("{label} must not be empty"));
     }
 
     let fields = value.splitn(3, ',').collect::<Vec<_>>();
-    let parsed = parse_endpoint(fields[0].trim(), value, label, default_port)?;
+    let parsed = Endpoint::parse(fields[0].trim(), default_port)
+        .map_err(|error| format!("invalid {label} `{value}`: {error}"))?;
     let access_code = parse_access_code_arg(fields.get(1).copied(), label, value)?;
     let name = optional_field(&fields, 2);
 
-    Ok(LocalEndpointConfig {
+    Ok(BambuLocalEndpointConfig {
         endpoint: parsed,
         access_code,
         name,
@@ -105,9 +106,9 @@ fn optional_field(fields: &[&str], index: usize) -> Option<String> {
 
 #[cfg(test)]
 mod tests {
-    use super::LocalEndpointConfig;
+    use super::BambuLocalEndpointConfig;
 
-    fn local_device_arg(value: &str) -> LocalEndpointConfig {
+    fn local_device_arg(value: &str) -> BambuLocalEndpointConfig {
         value.parse().expect("local device arg should parse")
     }
 
@@ -118,7 +119,10 @@ mod tests {
         assert_eq!(device.endpoint.host, "192.168.1.50");
         assert_eq!(device.endpoint.port, 8883);
         assert_eq!(
-            device.access_code.as_ref().map(|code| code.expose().as_str()),
+            device
+                .access_code
+                .as_ref()
+                .map(|code| code.expose().as_str()),
             Some("12345678")
         );
         assert_eq!(device.name.as_deref(), Some("Office X1"));
@@ -158,7 +162,7 @@ mod tests {
     #[test]
     fn local_device_parser_rejects_device_id_prefix() {
         let error = "printer-a=printer.local:18883,12345678"
-            .parse::<LocalEndpointConfig>()
+            .parse::<BambuLocalEndpointConfig>()
             .unwrap_err();
 
         assert!(error.contains("DEVICE_ID= prefix is not supported"));
@@ -171,7 +175,10 @@ mod tests {
         assert_eq!(device.endpoint.host, "printer.local");
         assert_eq!(device.endpoint.port, 18883);
         assert_eq!(
-            device.access_code.as_ref().map(|code| code.expose().as_str()),
+            device
+                .access_code
+                .as_ref()
+                .map(|code| code.expose().as_str()),
             Some("12345678")
         );
         assert_eq!(device.name.as_deref(), Some("Office X1"));

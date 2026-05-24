@@ -2,22 +2,25 @@ use anyhow::{Context, Result};
 use tracing::info;
 
 use crate::{
-    cloud::{cloud_mqtt_startup, CloudSession},
+    bambu::{
+        cloud::{cloud_mqtt_startup, CloudSession},
+        local::{BambuLocalDevice, BambuLocalEndpointConfig},
+    },
     devices::{resolve_devices, DeviceRegistry},
-    local::{LocalDevice, LocalEndpointConfig, MqttEndpoint},
+    endpoint::MqttEndpoint,
     mqtt::{monitor_target, MqttTarget},
 };
 
 pub(crate) struct MonitorConfig {
     pub cloud_mqtt: MqttEndpoint,
     pub cloud_devices: Vec<String>,
-    pub local_devices: Vec<LocalEndpointConfig>,
+    pub local_devices: Vec<BambuLocalEndpointConfig>,
     pub device: Option<String>,
 }
 
 enum MonitorTarget {
     Cloud(String),
-    Local(LocalDevice),
+    Local(BambuLocalDevice),
 }
 
 impl MonitorTarget {
@@ -94,23 +97,25 @@ fn select_monitor_target(
 mod tests {
     use super::{select_monitor_target, MonitorTarget};
     use crate::{
-        bambu::CloudDevice,
+        bambu::{
+            local::{BambuLocalDevice, BambuLocalEndpoint},
+            BambuCloudDevice,
+        },
         devices::DeviceRegistry,
-        local::{LocalDevice, LocalEndpoint},
     };
 
-    fn cloud_device(id: &str) -> CloudDevice {
-        CloudDevice {
+    fn cloud_device(id: &str) -> BambuCloudDevice {
+        BambuCloudDevice {
             id: Some(id.to_owned()),
             online: Some(true),
-            ..CloudDevice::default()
+            ..BambuCloudDevice::default()
         }
     }
 
-    fn local_device(id: &str) -> LocalDevice {
-        LocalDevice {
+    fn local_device(id: &str) -> BambuLocalDevice {
+        BambuLocalDevice {
             id: id.to_owned(),
-            endpoint: LocalEndpoint::new("192.168.1.50", 8883, "12345678"),
+            endpoint: BambuLocalEndpoint::new("192.168.1.50", 8883, "12345678"),
         }
     }
 

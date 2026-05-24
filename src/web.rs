@@ -18,7 +18,7 @@ use axum::{
 use tokio::net::TcpListener;
 use tracing::info;
 
-use crate::{local::Endpoint, service::Shutdown};
+use crate::{endpoint::Endpoint, service::Shutdown};
 
 pub(crate) use state::AppState;
 
@@ -95,7 +95,7 @@ mod tests {
     use tower::ServiceExt;
 
     use crate::{
-        bambu::CloudDevice, devices::DeviceRegistry, live::LiveStateStore, mqtt::MqttRuntime,
+        bambu::BambuCloudDevice, devices::DeviceRegistry, live::LiveStateStore, mqtt::MqttRuntime,
         secret::Secret, service::Shutdown, thumbnail::ThumbnailService, video::VideoStreams,
     };
 
@@ -142,17 +142,15 @@ mod tests {
         let live = LiveStateStore::new();
         let mqtt = MqttRuntime::new(live.clone());
         let registry = DeviceRegistry::new(
-            vec![CloudDevice {
+            vec![BambuCloudDevice {
                 id: Some("printer a/1".to_owned()),
                 access_code: Some(Secret::new("12345678".to_owned())),
-                ..CloudDevice::default()
+                ..BambuCloudDevice::default()
             }],
             Vec::new(),
         );
-        let (video, _video_events) =
-            VideoStreams::new(HashMap::new(), Shutdown::new()).unwrap();
-        let thumbnail =
-            ThumbnailService::new(mqtt.clone(), live.clone(), None, registry.clone());
+        let (video, _video_events) = VideoStreams::new(HashMap::new(), Shutdown::new()).unwrap();
+        let thumbnail = ThumbnailService::new(mqtt.clone(), live.clone(), None, registry.clone());
         AppState::new(live, registry, video, thumbnail, Shutdown::new())
     }
 }

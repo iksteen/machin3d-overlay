@@ -19,9 +19,8 @@
 use std::collections::{HashMap, HashSet};
 
 use crate::{
-    bambu::{printer_status_to_live, CloudDevice},
+    bambu::{local::BambuLocalDevice, printer_status_to_live, BambuCloudDevice},
     live::PrinterReport,
-    local::LocalDevice,
     secret::Secret,
     snapmaker::{SnapMqttCreds, SnapmakerDevice, SnapmakerEndpoint},
     video::VideoEndpoint,
@@ -37,7 +36,7 @@ pub(crate) struct KnownDevice {
 }
 
 impl KnownDevice {
-    pub(crate) fn from_cloud(device: CloudDevice) -> Option<Self> {
+    pub(crate) fn from_cloud(device: BambuCloudDevice) -> Option<Self> {
         Some(Self {
             id: non_empty_string(device.id)?,
             name: device.name,
@@ -46,7 +45,7 @@ impl KnownDevice {
         })
     }
 
-    pub(crate) fn from_local(device: &LocalDevice) -> Self {
+    pub(crate) fn from_local(device: &BambuLocalDevice) -> Self {
         Self {
             id: device.id.clone(),
             name: device.endpoint.name.clone(),
@@ -82,7 +81,7 @@ pub(crate) struct BambuCapabilities {
     pub(crate) cloud_mqtt: bool,
     /// Set for devices we drive over the LAN MQTT broker on the printer
     /// itself; carries the connection parameters plus access code.
-    pub(crate) local_mqtt: Option<LocalDevice>,
+    pub(crate) local_mqtt: Option<BambuLocalDevice>,
     /// Set when the operator passed `--bbl-video-device`, or when startup
     /// probing auto-enabled a local video endpoint.
     pub(crate) explicit_video: Option<VideoEndpoint>,
@@ -138,7 +137,7 @@ pub(crate) struct DeviceRegistry {
 }
 
 impl DeviceEntry {
-    fn from_cloud(device: CloudDevice) -> Option<Self> {
+    fn from_cloud(device: BambuCloudDevice) -> Option<Self> {
         let access_code = device.access_code.clone();
         Some(Self {
             device: KnownDevice::from_cloud(device)?,
@@ -151,7 +150,7 @@ impl DeviceEntry {
         })
     }
 
-    fn from_local(local: LocalDevice) -> Self {
+    fn from_local(local: BambuLocalDevice) -> Self {
         Self {
             device: KnownDevice::from_local(&local),
             capabilities: DeviceCapabilities::Bambu(BambuCapabilities {
@@ -226,7 +225,10 @@ impl DeviceRegistry {
     /// Production code goes through [`DeviceRegistryBuilder`] so
     /// hydration can happen before the registry is frozen.
     #[cfg(test)]
-    pub(crate) fn new(cloud_devices: Vec<CloudDevice>, local_devices: Vec<LocalDevice>) -> Self {
+    pub(crate) fn new(
+        cloud_devices: Vec<BambuCloudDevice>,
+        local_devices: Vec<BambuLocalDevice>,
+    ) -> Self {
         DeviceRegistryBuilder::new(cloud_devices, local_devices, Vec::new()).build()
     }
 
@@ -269,7 +271,7 @@ impl DeviceRegistry {
             .filter_map(|entry| entry.snapmaker().map(|snap| (entry, snap)))
     }
 
-    pub(crate) fn local_devices(&self) -> Vec<LocalDevice> {
+    pub(crate) fn local_devices(&self) -> Vec<BambuLocalDevice> {
         self.bambu_entries()
             .filter_map(|(_, bambu)| bambu.local_mqtt.clone())
             .collect()
@@ -278,8 +280,8 @@ impl DeviceRegistry {
 
 impl DeviceRegistryBuilder {
     pub(crate) fn new(
-        cloud_devices: Vec<CloudDevice>,
-        local_devices: Vec<LocalDevice>,
+        cloud_devices: Vec<BambuCloudDevice>,
+        local_devices: Vec<BambuLocalDevice>,
         snapmaker_devices: Vec<SnapmakerDevice>,
     ) -> Self {
         let local_ids = local_devices
@@ -354,17 +356,19 @@ fn non_empty_str(value: &str) -> Option<&str> {
 #[cfg(test)]
 mod tests {
     use crate::{
-        bambu::CloudDevice,
-        local::{LocalDevice, LocalEndpoint},
+        bambu::{
+            local::{BambuLocalDevice, BambuLocalEndpoint},
+            BambuCloudDevice,
+        },
         secret::Secret,
     };
 
     use super::DeviceRegistry;
 
-    fn local_device(id: &str, name: Option<&str>) -> LocalDevice {
-        let mut endpoint = LocalEndpoint::new("192.168.1.50", 8883, "12345678");
+    fn local_device(id: &str, name: Option<&str>) -> BambuLocalDevice {
+        let mut endpoint = BambuLocalEndpoint::new("192.168.1.50", 8883, "12345678");
         endpoint.name = name.map(str::to_owned);
-        LocalDevice {
+        BambuLocalDevice {
             id: id.to_owned(),
             endpoint,
         }
@@ -375,16 +379,16 @@ mod tests {
         let local_devices = vec![local_device("printer-a", Some("Office"))];
         let registry = DeviceRegistry::new(
             vec![
-                CloudDevice {
+                BambuCloudDevice {
                     id: Some(" printer-a ".to_owned()),
                     name: Some("Cloud Office".to_owned()),
                     access_code: Some(Secret::new("87654321".to_owned())),
-                    ..CloudDevice::default()
+                    ..BambuCloudDevice::default()
                 },
-                CloudDevice {
+                BambuCloudDevice {
                     id: Some("printer-b".to_owned()),
                     name: Some("Garage".to_owned()),
-                    ..CloudDevice::default()
+                    ..BambuCloudDevice::default()
                 },
             ],
             local_devices,
@@ -407,11 +411,11 @@ mod tests {
     fn registry_ignores_cloud_devices_without_ids() {
         let registry = DeviceRegistry::new(
             vec![
-                CloudDevice {
+                BambuCloudDevice {
                     id: Some("printer-a".to_owned()),
-                    ..CloudDevice::default()
+                    ..BambuCloudDevice::default()
                 },
-                CloudDevice::default(),
+                BambuCloudDevice::default(),
             ],
             Vec::new(),
         );
@@ -426,9 +430,9 @@ mod tests {
     #[test]
     fn registry_marks_cloud_mqtt_only_for_cloud_devices() {
         let registry = DeviceRegistry::new(
-            vec![CloudDevice {
+            vec![BambuCloudDevice {
                 id: Some("printer-a".to_owned()),
-                ..CloudDevice::default()
+                ..BambuCloudDevice::default()
             }],
             vec![local_device("printer-b", Some("Office"))],
         );
@@ -444,10 +448,10 @@ mod tests {
     #[test]
     fn registry_access_code_prefers_local_credentials() {
         let registry = DeviceRegistry::new(
-            vec![CloudDevice {
+            vec![BambuCloudDevice {
                 id: Some("printer-a".to_owned()),
                 access_code: Some(Secret::new("cloud-code".to_owned())),
-                ..CloudDevice::default()
+                ..BambuCloudDevice::default()
             }],
             vec![local_device("printer-a", Some("Office"))],
         );
@@ -464,9 +468,9 @@ mod tests {
     #[test]
     fn registry_capability_split_marks_local_and_cloud_paths() {
         let registry = DeviceRegistry::new(
-            vec![CloudDevice {
+            vec![BambuCloudDevice {
                 id: Some("printer-a".to_owned()),
-                ..CloudDevice::default()
+                ..BambuCloudDevice::default()
             }],
             vec![local_device("printer-b", Some("Office"))],
         );

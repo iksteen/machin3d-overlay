@@ -255,7 +255,7 @@ mod tests {
     use std::{collections::HashMap, str::FromStr};
 
     use crate::{
-        bambu::CloudDevice,
+        bambu::BambuCloudDevice,
         devices::DeviceRegistry,
         secret::Secret,
         service::Shutdown,
@@ -272,15 +272,15 @@ mod tests {
     async fn subscribe_rejects_device_without_a_configured_source() {
         let registry = DeviceRegistry::new(
             vec![
-                CloudDevice {
+                BambuCloudDevice {
                     id: Some("printer-a".to_owned()),
                     access_code: Some(Secret::new("11111111".to_owned())),
-                    ..CloudDevice::default()
+                    ..BambuCloudDevice::default()
                 },
-                CloudDevice {
+                BambuCloudDevice {
                     id: Some("printer-b".to_owned()),
                     access_code: Some(Secret::new("22222222".to_owned())),
-                    ..CloudDevice::default()
+                    ..BambuCloudDevice::default()
                 },
             ],
             Vec::new(),

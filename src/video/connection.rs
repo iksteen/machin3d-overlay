@@ -8,7 +8,7 @@ use tokio::{
 };
 use tracing::{info, warn};
 
-use crate::{device_tls, service::ShutdownReceiver};
+use crate::{bambu::device_tls, errors::error_chain, service::ShutdownReceiver};
 
 use super::{
     endpoint::VideoEndpoint,
@@ -229,13 +229,6 @@ where
     }
 }
 
-fn error_chain(error: &anyhow::Error) -> String {
-    error
-        .chain()
-        .map(ToString::to_string)
-        .collect::<Vec<_>>()
-        .join(": ")
-}
 
 #[cfg(test)]
 mod tests {

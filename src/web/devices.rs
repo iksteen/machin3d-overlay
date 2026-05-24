@@ -89,26 +89,28 @@ mod tests {
 
     use super::known_devices_payload;
     use crate::{
-        bambu::CloudDevice,
+        bambu::{
+            local::{BambuLocalDevice, BambuLocalEndpoint},
+            BambuCloudDevice,
+        },
         devices::DeviceRegistry,
-        local::{LocalDevice, LocalEndpoint},
         secret::Secret,
     };
 
     #[test]
     fn known_devices_payload_includes_paths_without_access_codes() {
         let devices = DeviceRegistry::new(
-            vec![CloudDevice {
+            vec![BambuCloudDevice {
                 id: Some("printer-b".to_owned()),
                 name: Some("Garage".to_owned()),
                 online: Some(false),
                 access_code: Some(Secret::new("87654321".to_owned())),
-                ..CloudDevice::default()
+                ..BambuCloudDevice::default()
             }],
-            vec![LocalDevice {
+            vec![BambuLocalDevice {
                 id: "printer a/1".to_owned(),
                 endpoint: {
-                    let mut endpoint = LocalEndpoint::new("192.168.1.50", 8883, "12345678");
+                    let mut endpoint = BambuLocalEndpoint::new("192.168.1.50", 8883, "12345678");
                     endpoint.name = Some("Office".to_owned());
                     endpoint
                 },

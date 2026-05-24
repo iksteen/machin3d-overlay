@@ -2,7 +2,7 @@ use anyhow::{Context, Result};
 
 use crate::{
     bambu::{PrinterStatus, Task},
-    cloud::CloudSession,
+    bambu::cloud::CloudSession,
 };
 
 use super::{image_content_type, trimmed, ThumbnailImage, MAX_THUMBNAIL_SIZE};

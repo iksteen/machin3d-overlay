@@ -5,8 +5,10 @@ use tokio::{sync::Semaphore, task::JoinSet};
 use tracing::{info, warn};
 
 use crate::{
-    cloud::{bound_cloud_devices, explicit_cloud_devices, CloudSession},
-    local::{infer_local_device_id, LocalDevice, LocalEndpointConfig},
+    bambu::{
+        cloud::{bound_cloud_devices, explicit_cloud_devices, CloudSession},
+        local::{infer_local_device_id, BambuLocalDevice, BambuLocalEndpointConfig},
+    },
     snapmaker::{
         load_snap_tokens, probe_system_info, SnapMqttCreds, SnapToken, SnapmakerDevice,
         SnapmakerDeviceConfig,
@@ -26,7 +28,7 @@ const STARTUP_PROBE_CONCURRENCY: usize = 8;
 pub(crate) async fn resolve_devices(
     cloud: Option<&CloudSession>,
     cloud_configs: &[String],
-    local_configs: &[LocalEndpointConfig],
+    local_configs: &[BambuLocalEndpointConfig],
     video_endpoints: &[VideoEndpoint],
     snapmaker_configs: &[SnapmakerDeviceConfig],
     snap_token_file: Option<&Path>,
@@ -159,10 +161,10 @@ fn ensure_unique_cloud_configs(cloud_configs: &[String]) -> Result<()> {
 }
 
 async fn resolve_local_devices(
-    configs: &[LocalEndpointConfig],
+    configs: &[BambuLocalEndpointConfig],
     video_endpoints: &ExplicitVideoEndpoints,
     bind_catalog: &mut BindCatalog<'_>,
-) -> Result<Vec<LocalDevice>> {
+) -> Result<Vec<BambuLocalDevice>> {
     let mut devices = Vec::with_capacity(configs.len());
     let mut seen = HashSet::new();
     let device_ids = infer_local_device_ids(configs).await?;
@@ -183,7 +185,7 @@ async fn resolve_local_devices(
     Ok(devices)
 }
 
-async fn infer_local_device_ids(configs: &[LocalEndpointConfig]) -> Result<Vec<String>> {
+async fn infer_local_device_ids(configs: &[BambuLocalEndpointConfig]) -> Result<Vec<String>> {
     let semaphore = Arc::new(Semaphore::new(STARTUP_PROBE_CONCURRENCY));
     let mut probes = JoinSet::new();
     for (index, config) in configs.iter().cloned().enumerate() {
@@ -215,10 +217,10 @@ async fn infer_local_device_ids(configs: &[LocalEndpointConfig]) -> Result<Vec<S
 
 async fn resolve_local_device_access(
     device_id: String,
-    mut endpoint: LocalEndpointConfig,
+    mut endpoint: BambuLocalEndpointConfig,
     video_endpoints: &ExplicitVideoEndpoints,
     bind_catalog: &mut BindCatalog<'_>,
-) -> Result<LocalDevice> {
+) -> Result<BambuLocalDevice> {
     hydrate_local_config(
         &device_id,
         &mut endpoint,
@@ -235,7 +237,7 @@ async fn resolve_local_device_access(
 fn should_enumerate_cloud_catalog(
     cloud_available: bool,
     cloud_configs: &[String],
-    local_configs: &[LocalEndpointConfig],
+    local_configs: &[BambuLocalEndpointConfig],
     snapmaker_configs: &[SnapmakerDeviceConfig],
 ) -> bool {
     cloud_available
@@ -244,7 +246,10 @@ fn should_enumerate_cloud_catalog(
         && snapmaker_configs.is_empty()
 }
 
-fn finalize_local_device(device_id: String, endpoint: LocalEndpointConfig) -> Result<LocalDevice> {
+fn finalize_local_device(
+    device_id: String,
+    endpoint: BambuLocalEndpointConfig,
+) -> Result<BambuLocalDevice> {
     let access_code = endpoint
         .access_code
         .as_ref()
@@ -256,7 +261,7 @@ fn finalize_local_device(device_id: String, endpoint: LocalEndpointConfig) -> Re
                 device_id
             )
         })?;
-    Ok(LocalDevice {
+    Ok(BambuLocalDevice {
         id: device_id,
         endpoint: endpoint.into_endpoint(access_code),
     })
@@ -269,11 +274,11 @@ mod tests {
         should_enumerate_cloud_catalog,
     };
     use crate::{
+        bambu::local::BambuLocalEndpointConfig,
         devices::{access::BindCatalog, video::ExplicitVideoEndpoints},
-        local::LocalEndpointConfig,
     };
 
-    fn local_arg(value: &str) -> LocalEndpointConfig {
+    fn local_arg(value: &str) -> BambuLocalEndpointConfig {
         value.parse().expect("local device should parse")
     }
 

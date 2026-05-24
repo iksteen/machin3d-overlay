@@ -12,7 +12,7 @@ use tracing::debug;
 use uuid::Uuid;
 use zip::result::ZipError;
 
-use crate::{bambu::PrinterStatus, device_tls, local::LocalDevice};
+use crate::bambu::{device_tls, local::BambuLocalDevice, PrinterStatus};
 
 use super::{
     archive::extract_bambu_3mf_thumbnail_reader, error_chain, ThumbnailImage, ThumbnailStatus,
@@ -33,7 +33,7 @@ enum LocalThumbnailFailure {
 
 pub(super) async fn fetch_thumbnail(
     device_id: &str,
-    local: &LocalDevice,
+    local: &BambuLocalDevice,
     report: &PrinterStatus,
 ) -> Result<ThumbnailStatus> {
     if local_cloud_3mf_is_preparing(report) {
@@ -73,7 +73,10 @@ fn classify_local_thumbnail_failure(
     }
 }
 
-async fn fetch_local_3mf_thumbnail(device: &LocalDevice, filename: &str) -> Result<ThumbnailImage> {
+async fn fetch_local_3mf_thumbnail(
+    device: &BambuLocalDevice,
+    filename: &str,
+) -> Result<ThumbnailImage> {
     let device = device.clone();
     let filename = filename.to_owned();
     tokio::task::spawn_blocking(move || fetch_local_3mf_thumbnail_blocking(&device, &filename))
@@ -82,7 +85,7 @@ async fn fetch_local_3mf_thumbnail(device: &LocalDevice, filename: &str) -> Resu
 }
 
 fn fetch_local_3mf_thumbnail_blocking(
-    device: &LocalDevice,
+    device: &BambuLocalDevice,
     filename: &str,
 ) -> Result<ThumbnailImage> {
     let candidates = local_file_candidates(filename);
@@ -100,7 +103,7 @@ fn fetch_local_3mf_thumbnail_blocking(
 }
 
 fn fetch_local_3mf_thumbnail_with_mode(
-    device: &LocalDevice,
+    device: &BambuLocalDevice,
     candidates: &[String],
     mode: Mode,
 ) -> Result<ThumbnailImage> {
@@ -126,7 +129,7 @@ fn fetch_local_3mf_thumbnail_with_mode(
 }
 
 fn retrieve_thumbnail_from_candidate(
-    device: &LocalDevice,
+    device: &BambuLocalDevice,
     mode: Mode,
     path: &str,
 ) -> Result<ThumbnailImage> {
@@ -134,7 +137,7 @@ fn retrieve_thumbnail_from_candidate(
     retrieve_thumbnail(&mut client, path)
 }
 
-fn connect_local_ftps(device: &LocalDevice, mode: Mode) -> Result<NativeTlsFtpStream> {
+fn connect_local_ftps(device: &BambuLocalDevice, mode: Mode) -> Result<NativeTlsFtpStream> {
     let address = local_ftps_address(device);
     let connector = NativeTlsConnector::from(device_tls::native_connector()?);
     let mut client = NativeTlsFtpStream::connect_secure_implicit(
@@ -230,7 +233,7 @@ impl Drop for TempArchive {
     }
 }
 
-fn local_ftps_address(device: &LocalDevice) -> String {
+fn local_ftps_address(device: &BambuLocalDevice) -> String {
     if device.endpoint.host().contains(':') {
         format!("[{}]:{LOCAL_FTPS_PORT}", device.endpoint.host())
     } else {

@@ -4,12 +4,10 @@ use anyhow::Result;
 use tracing::warn;
 
 use crate::{
-    bambu,
-    bambu::{MQTT_HOST, MQTT_PORT},
-    cloud::CloudSession,
+    bambu::{self, cloud::CloudSession, local::BambuLocalEndpointConfig, MQTT_HOST, MQTT_PORT},
     devices::{resolve_devices, resolve_video_endpoints},
+    endpoint::{Endpoint, MqttEndpoint},
     live::LiveStateStore,
-    local::{Endpoint, LocalEndpointConfig, MqttEndpoint},
     mqtt::MqttRuntime,
     service::{wait_for_process_shutdown_signal, ServiceTasks, Shutdown},
     snapmaker::{self, SnapmakerDeviceConfig},
@@ -26,7 +24,7 @@ const SHUTDOWN_GRACE: Duration = Duration::from_secs(5);
 pub(crate) struct ServerConfig {
     pub bind: Endpoint,
     pub cloud_mqtt: MqttEndpoint,
-    pub local_devices: Vec<LocalEndpointConfig>,
+    pub local_devices: Vec<BambuLocalEndpointConfig>,
     pub cloud_devices: Vec<String>,
     pub video_endpoints: Vec<VideoEndpoint>,
     pub snapmaker_devices: Vec<SnapmakerDeviceConfig>,

@@ -6,8 +6,8 @@ use tracing::warn;
 use uuid::Uuid;
 
 use crate::{
-    device_tls,
-    local::{LocalDevice, MqttEndpoint},
+    bambu::{device_tls, local::BambuLocalDevice},
+    endpoint::MqttEndpoint,
     secret::Secret,
 };
 
@@ -21,7 +21,7 @@ pub(crate) enum MqttTarget {
         access_token: Secret<String>,
         device_ids: Vec<String>,
     },
-    Local(LocalDevice),
+    Local(BambuLocalDevice),
 }
 
 impl MqttTarget {
@@ -39,7 +39,7 @@ impl MqttTarget {
         }
     }
 
-    pub(crate) fn local(device: LocalDevice) -> Self {
+    pub(crate) fn local(device: BambuLocalDevice) -> Self {
         Self::Local(device)
     }
 
@@ -105,7 +105,7 @@ fn cloud_mqtt_options(
     Ok(options)
 }
 
-fn local_mqtt_options(device: &LocalDevice) -> Result<MqttOptions> {
+fn local_mqtt_options(device: &BambuLocalDevice) -> Result<MqttOptions> {
     let mut options = MqttOptions::new(
         format!("bambu-overlay-{}", Uuid::new_v4()),
         device.endpoint.host(),

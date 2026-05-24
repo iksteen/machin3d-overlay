@@ -1,9 +1,11 @@
 use anyhow::Result;
 
 use crate::{
-    bambu::CloudDevice,
-    cloud::{bound_cloud_devices, CloudSession},
-    local::LocalEndpointConfig,
+    bambu::{
+        cloud::{bound_cloud_devices, CloudSession},
+        local::BambuLocalEndpointConfig,
+        BambuCloudDevice,
+    },
     secret::Secret,
     video::VideoEndpoint,
 };
@@ -17,18 +19,21 @@ use super::registry::DeviceEntry;
 /// the fetch.
 pub(super) struct BindCatalog<'a> {
     cloud: Option<&'a CloudSession>,
-    devices: Option<Vec<CloudDevice>>,
+    devices: Option<Vec<BambuCloudDevice>>,
 }
 
 impl<'a> BindCatalog<'a> {
-    pub(super) fn new(cloud: Option<&'a CloudSession>, devices: Option<Vec<CloudDevice>>) -> Self {
+    pub(super) fn new(
+        cloud: Option<&'a CloudSession>,
+        devices: Option<Vec<BambuCloudDevice>>,
+    ) -> Self {
         Self { cloud, devices }
     }
 
     pub(super) async fn load_device_from_cloud(
         &mut self,
         device_id: &str,
-    ) -> Result<Option<CloudDevice>> {
+    ) -> Result<Option<BambuCloudDevice>> {
         if self.devices.is_none() {
             self.devices = Some(bound_cloud_devices(self.cloud).await?);
         }
@@ -45,7 +50,7 @@ impl<'a> BindCatalog<'a> {
 
 pub(super) async fn hydrate_local_config(
     device_id: &str,
-    endpoint: &mut LocalEndpointConfig,
+    endpoint: &mut BambuLocalEndpointConfig,
     video: Option<&VideoEndpoint>,
     bind_catalog: &mut BindCatalog<'_>,
 ) -> Result<()> {
@@ -116,9 +121,9 @@ fn has_access_code(access_code: Option<&Secret<String>>) -> bool {
 #[cfg(test)]
 mod tests {
     use super::{hydrate_local_config, BindCatalog};
-    use crate::{local::LocalEndpointConfig, video::VideoEndpoint};
+    use crate::{bambu::local::BambuLocalEndpointConfig, video::VideoEndpoint};
 
-    fn local_config(value: &str) -> LocalEndpointConfig {
+    fn local_config(value: &str) -> BambuLocalEndpointConfig {
         value.parse().expect("local config should parse")
     }
 

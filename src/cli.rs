@@ -5,10 +5,13 @@ use chrono::{DateTime, Utc};
 use clap::{Args, Parser, Subcommand};
 
 use crate::{
-    auth::{default_token_path, load_token, save_token},
-    bambu::{BambuClient, LoginResponse, API_BASE, MQTT_HOST},
-    cloud::CloudSession,
-    local::{Endpoint, LocalEndpointConfig, MqttEndpoint},
+    bambu::{
+        auth::{default_token_path, load_token, save_token},
+        cloud::CloudSession,
+        local::BambuLocalEndpointConfig,
+        BambuClient, LoginResponse, API_BASE, MQTT_HOST,
+    },
+    endpoint::{Endpoint, MqttEndpoint},
     monitor::{monitor_mqtt, MonitorConfig},
     secret::Secret,
     server::{serve, ServerConfig, DEFAULT_HOST, DEFAULT_PORT},
@@ -223,7 +226,7 @@ struct DeviceSelectionArgs {
         help = "Bambu LAN MQTT device; repeat for multiple printers. Port defaults to 8883. The device ID is inferred from the MQTT certificate. ACCESS_CODE can be provided here or looked up from /bind when needed",
         help_heading = "Bambu LAN"
     )]
-    local_devices: Vec<LocalEndpointConfig>,
+    local_devices: Vec<BambuLocalEndpointConfig>,
 }
 
 pub async fn run(cli: Cli) -> Result<()> {
@@ -403,7 +406,7 @@ fn token_client(token_file: Option<PathBuf>, timeout: f64) -> Result<CloudSessio
     })
 }
 
-fn validate_token_freshness(token_data: &crate::auth::TokenData) -> Result<()> {
+fn validate_token_freshness(token_data: &crate::bambu::auth::TokenData) -> Result<()> {
     let Some(expires_at) = token_data
         .expires_at
         .as_deref()
@@ -485,7 +488,8 @@ fn positive_f64(value: &str) -> std::result::Result<f64, String> {
 }
 
 fn parse_bind_endpoint(value: &str) -> std::result::Result<Endpoint, String> {
-    Endpoint::parse_with_default(value, "bind address", DEFAULT_PORT)
+    Endpoint::parse(value, DEFAULT_PORT)
+        .map_err(|error| format!("invalid bind address `{value}`: {error}"))
 }
 
 fn parse_cloud_device_id(value: &str) -> std::result::Result<String, String> {
@@ -503,7 +507,7 @@ fn parse_cloud_device_id(value: &str) -> std::result::Result<String, String> {
 
 #[cfg(test)]
 mod tests {
-    use crate::auth::TokenData;
+    use crate::bambu::auth::TokenData;
 
     use super::{parse_cloud_device_id, validate_token_freshness};
 

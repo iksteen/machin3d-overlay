@@ -1,8 +1,8 @@
 use anyhow::{Context, Result};
 
 use crate::{
-    bambu::{BambuClient, CloudDevice},
-    local::MqttEndpoint,
+    bambu::{BambuClient, BambuCloudDevice},
+    endpoint::MqttEndpoint,
     mqtt::MqttTarget,
     secret::Secret,
 };
@@ -32,7 +32,9 @@ impl CloudMqttStartup {
     }
 }
 
-pub(crate) async fn bound_cloud_devices(cloud: Option<&CloudSession>) -> Result<Vec<CloudDevice>> {
+pub(crate) async fn bound_cloud_devices(
+    cloud: Option<&CloudSession>,
+) -> Result<Vec<BambuCloudDevice>> {
     let cloud = cloud.context("Bambu Cloud /bind metadata requires a Bambu Cloud token")?;
     let mut bound = cloud
         .client
@@ -44,18 +46,18 @@ pub(crate) async fn bound_cloud_devices(cloud: Option<&CloudSession>) -> Result<
     Ok(bound.devices)
 }
 
-pub(crate) fn explicit_cloud_devices(configs: &[String]) -> Vec<CloudDevice> {
+pub(crate) fn explicit_cloud_devices(configs: &[String]) -> Vec<BambuCloudDevice> {
     configs
         .iter()
         .map(|device_id| explicit_cloud_device(device_id))
         .collect()
 }
 
-fn explicit_cloud_device(device_id: &str) -> CloudDevice {
-    CloudDevice {
+fn explicit_cloud_device(device_id: &str) -> BambuCloudDevice {
+    BambuCloudDevice {
         id: Some(device_id.to_owned()),
         online: Some(true),
-        ..CloudDevice::default()
+        ..BambuCloudDevice::default()
     }
 }
 
@@ -82,7 +84,7 @@ pub(crate) fn cloud_mqtt_startup(
 #[cfg(test)]
 mod tests {
     use super::{bound_cloud_devices, cloud_mqtt_startup, explicit_cloud_devices, Secret};
-    use crate::{bambu::BambuClient, local::MqttEndpoint};
+    use crate::{bambu::BambuClient, endpoint::MqttEndpoint};
     use std::time::Duration;
 
     fn mqtt_endpoint(value: &str) -> MqttEndpoint {

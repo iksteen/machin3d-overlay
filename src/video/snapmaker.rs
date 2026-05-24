@@ -27,6 +27,7 @@ use tokio::{
 use tracing::{debug, info, warn};
 
 use crate::{
+    errors::error_chain,
     service::ShutdownReceiver,
     snapmaker::{mtls, SnapMqttCreds, SnapmakerEndpoint},
 };
@@ -532,10 +533,3 @@ async fn sleep_or_no_clients(stream: &DeviceVideoStream, delay: Duration) {
     }
 }
 
-fn error_chain(error: &anyhow::Error) -> String {
-    error
-        .chain()
-        .map(ToString::to_string)
-        .collect::<Vec<_>>()
-        .join(": ")
-}

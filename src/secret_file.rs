@@ -1,13 +1,14 @@
-//! Atomic write of credential files (mode `0o600` on unix).
+//! Persisted credential files: state-directory resolution + atomic write.
 //!
-//! Both `auth` (Bambu Cloud token) and `snapmaker::auth` (Snapmaker mTLS
-//! pairing material) persist JSON credentials. They share the same
-//! durability + permission requirements: write to a temp file under the
-//! same directory, sync to disk, then rename into place atomically; clean
-//! up the temp file on any failure path; restrict permissions to the
-//! owning user on creation.
+//! Both `bambu::auth` (Bambu Cloud token) and `snapmaker::auth`
+//! (Snapmaker mTLS pairing material) live as JSON under
+//! `$XDG_STATE_HOME/bambu-overlay/` and need the same durability +
+//! permission story: write to a temp file under the same directory, sync
+//! to disk, rename into place atomically; clean up the temp file on any
+//! failure path; restrict permissions to the owning user on creation.
 
 use std::{
+    env,
     fs::{self, OpenOptions},
     io::Write,
     path::{Path, PathBuf},
@@ -18,6 +19,24 @@ use uuid::Uuid;
 
 #[cfg(unix)]
 use std::os::unix::fs::OpenOptionsExt;
+
+/// Path to a per-app credential file under the user's XDG state
+/// directory: `$XDG_STATE_HOME/bambu-overlay/<file_name>`, falling back
+/// to `~/.local/state/bambu-overlay/<file_name>` (or the current
+/// directory if even `$HOME` is unset).
+pub(crate) fn state_path(file_name: &str) -> PathBuf {
+    if let Ok(xdg_state_home) = env::var("XDG_STATE_HOME") {
+        return PathBuf::from(xdg_state_home)
+            .join("bambu-overlay")
+            .join(file_name);
+    }
+    dirs::home_dir()
+        .unwrap_or_else(|| PathBuf::from("."))
+        .join(".local")
+        .join("state")
+        .join("bambu-overlay")
+        .join(file_name)
+}
 
 /// Write `encoded` (plus a trailing newline) to `path` atomically. The
 /// file is created with mode `0o600` on unix. On any failure between

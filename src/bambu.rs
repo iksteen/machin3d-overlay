@@ -1,13 +1,17 @@
+pub(crate) mod auth;
 pub(crate) mod backend;
 mod client;
+pub(crate) mod cloud;
 mod de;
+pub(crate) mod device_tls;
 mod error;
+pub(crate) mod local;
 mod models;
 mod report;
 
 pub use client::BambuClient;
 pub use models::{
-    AmsState, AmsUnit, CloudDevice, DeviceListResponse, LoginResponse, PrinterStatus, Task,
+    AmsState, AmsUnit, BambuCloudDevice, DeviceListResponse, LoginResponse, PrinterStatus, Task,
     TasksResponse, Tray, UserPreference,
 };
 pub(crate) use report::to_live as printer_status_to_live;
