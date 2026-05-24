@@ -9,7 +9,6 @@ use anyhow::Result;
 use tracing::warn;
 
 use crate::{
-    backend::Backend,
     devices::DeviceRegistry,
     live::{ConnectionStatus, DeviceConnection, LiveStateStore},
     service::{ServiceTasks, Shutdown, ShutdownReceiver},
@@ -26,16 +25,9 @@ pub(crate) fn spawn(
     tasks: &mut ServiceTasks,
     shutdown: &Shutdown,
 ) {
-    for entry in registry.entries() {
-        if entry.backend() != Backend::Snapmaker {
-            continue;
-        }
-        let Some(endpoint) = entry.snapmaker_endpoint() else {
-            warn!(device_id = %entry.id(), "Snapmaker device has no endpoint configured");
-            continue;
-        };
+    for (entry, snap) in registry.snapmaker_entries() {
         let device_id = entry.id().to_owned();
-        let endpoint = endpoint.clone();
+        let endpoint = snap.endpoint.clone();
         let live = live.clone();
         let connection_key = format!("snap-{device_id}");
         let task_name = format!("snapmaker Moonraker ({device_id})");

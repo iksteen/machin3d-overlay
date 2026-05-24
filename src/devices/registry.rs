@@ -1,19 +1,24 @@
 //! Resolved, startup-stable device catalog.
 //!
 //! `DeviceRegistry` is the authority for devices known by the service after
-//! startup discovery has finished. Local devices intentionally override cloud
-//! entries with the same ID, because local MQTT owns the live data path in that
-//! scenario. Credentials are kept behind accessors so web/API payloads cannot
-//! accidentally serialize access codes.
+//! startup discovery has finished. Local Bambu devices intentionally
+//! override cloud entries with the same ID, because local MQTT owns the
+//! live data path in that scenario. Credentials are kept behind accessors
+//! so web/API payloads cannot accidentally serialize access codes.
 //!
-//! `DeviceRegistry` is immutable once it has been handed out. Mutation during
-//! resolution goes through [`DeviceRegistryBuilder`], which returns a frozen
-//! `DeviceRegistry` from [`DeviceRegistryBuilder::build`].
+//! Vendor-specific configuration lives in [`DeviceCapabilities`], a
+//! per-vendor enum. The variant is the source of truth for which backend
+//! handles a device — there is no separate discriminant field — and the
+//! per-vendor payload is non-`Option` for everything that's actually
+//! required at runtime.
+//!
+//! `DeviceRegistry` is immutable once it has been handed out. Mutation
+//! during resolution goes through [`DeviceRegistryBuilder`], which returns
+//! a frozen `DeviceRegistry` from [`DeviceRegistryBuilder::build`].
 
 use std::collections::{HashMap, HashSet};
 
 use crate::{
-    backend::Backend,
     bambu::{printer_status_to_live, CloudDevice},
     live::PrinterReport,
     local::LocalDevice,
@@ -22,12 +27,6 @@ use crate::{
     video::VideoEndpoint,
 };
 use tracing::warn;
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum DeviceSource {
-    Cloud,
-    Local,
-}
 
 #[derive(Debug, Clone)]
 pub(crate) struct KnownDevice {
@@ -66,26 +65,70 @@ impl KnownDevice {
     }
 }
 
+/// Per-vendor configuration owned by a [`DeviceEntry`]. The enum
+/// variant is the authoritative "backend" tag; each variant holds only
+/// fields that variant actually needs, with no cross-vendor `Option`
+/// fields.
+#[derive(Debug, Clone)]
+pub(crate) enum DeviceCapabilities {
+    Bambu(BambuCapabilities),
+    Snapmaker(SnapmakerCapabilities),
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct BambuCapabilities {
+    /// True for cloud-discovered devices that the service should drive
+    /// over the Bambu Cloud MQTT broker.
+    pub(crate) cloud_mqtt: bool,
+    /// Set for devices we drive over the LAN MQTT broker on the printer
+    /// itself; carries the connection parameters plus access code.
+    pub(crate) local_mqtt: Option<LocalDevice>,
+    /// Set when the operator passed `--bbl-video-device`, or when startup
+    /// probing auto-enabled a local video endpoint.
+    pub(crate) explicit_video: Option<VideoEndpoint>,
+    /// Access code from cloud `/bind` metadata, used when the LAN device
+    /// does not carry one of its own. The effective access code is
+    /// [`BambuCapabilities::access_code`].
+    pub(crate) access_code: Option<Secret<String>>,
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct SnapmakerCapabilities {
+    /// Moonraker HTTP/WS endpoint. Required for every Snapmaker entry —
+    /// startup resolution probes this to learn the SN that becomes the
+    /// device ID.
+    pub(crate) endpoint: SnapmakerEndpoint,
+    /// Per-printer mTLS material from a paired `snap-pair` token. When
+    /// `None`, the camera worker can still poll the JPEG but cannot wake
+    /// the daemon on its own.
+    pub(crate) mtls: Option<SnapMqttCreds>,
+}
+
+impl BambuCapabilities {
+    /// Effective access code: prefers the LAN device's code over the
+    /// cloud `/bind` code, both filtered for non-empty content.
+    pub(crate) fn access_code(&self) -> Option<&str> {
+        let local = self
+            .local_mqtt
+            .as_ref()
+            .and_then(|local| non_empty_str(local.endpoint.access_code()));
+        let entry = self
+            .access_code
+            .as_ref()
+            .map(|code| code.expose().as_str())
+            .and_then(non_empty_str);
+        local.or(entry)
+    }
+
+    pub(crate) fn has_access_code(&self) -> bool {
+        self.access_code().is_some()
+    }
+}
+
 #[derive(Debug, Clone)]
 pub(crate) struct DeviceEntry {
     device: KnownDevice,
-    credentials: DeviceCredentials,
     capabilities: DeviceCapabilities,
-    backend: Backend,
-}
-
-#[derive(Debug, Clone, Default)]
-struct DeviceCredentials {
-    access_code: Option<Secret<String>>,
-}
-
-#[derive(Debug, Clone, Default)]
-struct DeviceCapabilities {
-    cloud_mqtt: bool,
-    local_mqtt: Option<LocalDevice>,
-    explicit_video: Option<VideoEndpoint>,
-    snapmaker_endpoint: Option<SnapmakerEndpoint>,
-    snapmaker_mtls: Option<SnapMqttCreds>,
 }
 
 #[derive(Debug, Clone)]
@@ -96,47 +139,42 @@ pub(crate) struct DeviceRegistry {
 
 impl DeviceEntry {
     fn from_cloud(device: CloudDevice) -> Option<Self> {
-        let credentials = DeviceCredentials {
-            access_code: device.access_code.clone(),
-        };
+        let access_code = device.access_code.clone();
         Some(Self {
             device: KnownDevice::from_cloud(device)?,
-            credentials,
-            capabilities: DeviceCapabilities {
+            capabilities: DeviceCapabilities::Bambu(BambuCapabilities {
                 cloud_mqtt: true,
-                ..DeviceCapabilities::default()
-            },
-            backend: Backend::Bambu,
+                local_mqtt: None,
+                explicit_video: None,
+                access_code,
+            }),
         })
     }
 
     fn from_local(local: LocalDevice) -> Self {
         Self {
             device: KnownDevice::from_local(&local),
-            credentials: DeviceCredentials::default(),
-            capabilities: DeviceCapabilities {
+            capabilities: DeviceCapabilities::Bambu(BambuCapabilities {
+                cloud_mqtt: false,
                 local_mqtt: Some(local),
-                ..DeviceCapabilities::default()
-            },
-            backend: Backend::Bambu,
+                explicit_video: None,
+                access_code: None,
+            }),
         }
     }
 
     fn from_snapmaker(device: SnapmakerDevice) -> Self {
         Self {
             device: KnownDevice::from_snapmaker(&device),
-            credentials: DeviceCredentials::default(),
-            capabilities: DeviceCapabilities {
-                snapmaker_endpoint: Some(device.endpoint),
-                snapmaker_mtls: device.mtls,
-                ..DeviceCapabilities::default()
-            },
-            backend: Backend::Snapmaker,
+            capabilities: DeviceCapabilities::Snapmaker(SnapmakerCapabilities {
+                endpoint: device.endpoint,
+                mtls: device.mtls,
+            }),
         }
     }
 
-    pub(crate) fn backend(&self) -> Backend {
-        self.backend
+    pub(crate) fn id(&self) -> &str {
+        self.device.id.as_str()
     }
 
     pub(crate) fn device(&self) -> &KnownDevice {
@@ -147,78 +185,46 @@ impl DeviceEntry {
         &mut self.device
     }
 
-    pub(crate) fn id(&self) -> &str {
-        self.device.id.as_str()
+    pub(crate) fn capabilities(&self) -> &DeviceCapabilities {
+        &self.capabilities
     }
 
-    pub(crate) fn access_code(&self) -> Option<&str> {
-        let local_access_code = self
-            .local()
-            .and_then(|local| non_empty_str(local.endpoint.access_code()));
-        let entry_access_code = self
-            .credentials
-            .access_code
-            .as_ref()
-            .map(|code| code.expose().as_str())
-            .and_then(non_empty_str);
-        local_access_code.or(entry_access_code)
-    }
-
-    pub(crate) fn has_access_code(&self) -> bool {
-        self.access_code().is_some()
-    }
-
-    pub(super) fn set_access_code(&mut self, access_code: Option<Secret<String>>) {
-        self.credentials.access_code = access_code;
-    }
-
-    pub(crate) fn source(&self) -> DeviceSource {
-        if self.local().is_some() {
-            DeviceSource::Local
-        } else {
-            DeviceSource::Cloud
+    pub(crate) fn bambu(&self) -> Option<&BambuCapabilities> {
+        match &self.capabilities {
+            DeviceCapabilities::Bambu(bambu) => Some(bambu),
+            DeviceCapabilities::Snapmaker(_) => None,
         }
     }
 
-    pub(crate) fn has_cloud_mqtt(&self) -> bool {
-        self.capabilities.cloud_mqtt
+    pub(crate) fn snapmaker(&self) -> Option<&SnapmakerCapabilities> {
+        match &self.capabilities {
+            DeviceCapabilities::Snapmaker(snap) => Some(snap),
+            DeviceCapabilities::Bambu(_) => None,
+        }
     }
 
-    pub(crate) fn local(&self) -> Option<&LocalDevice> {
-        self.capabilities.local_mqtt.as_ref()
-    }
-
-    pub(crate) fn snapmaker_endpoint(&self) -> Option<&SnapmakerEndpoint> {
-        self.capabilities.snapmaker_endpoint.as_ref()
-    }
-
-    pub(crate) fn snapmaker_mtls(&self) -> Option<&SnapMqttCreds> {
-        self.capabilities.snapmaker_mtls.as_ref()
-    }
-
-    pub(crate) fn explicit_video(&self) -> Option<&VideoEndpoint> {
-        self.capabilities.explicit_video.as_ref()
-    }
-
-    pub(super) fn set_explicit_video(&mut self, video: VideoEndpoint) {
-        self.capabilities.explicit_video = Some(video);
+    pub(super) fn bambu_mut(&mut self) -> Option<&mut BambuCapabilities> {
+        match &mut self.capabilities {
+            DeviceCapabilities::Bambu(bambu) => Some(bambu),
+            DeviceCapabilities::Snapmaker(_) => None,
+        }
     }
 }
 
 /// Mutable construction surface for [`DeviceRegistry`].
 ///
-/// Used during startup resolution to hydrate access codes and explicit video
-/// endpoints. Once [`build`](Self::build) is called, the resulting
-/// `DeviceRegistry` has no mutable API and cannot be modified.
+/// Used during startup resolution to hydrate access codes and attach
+/// explicit video endpoints. Once [`build`](Self::build) is called, the
+/// resulting `DeviceRegistry` has no mutable API and cannot be modified.
 pub(crate) struct DeviceRegistryBuilder {
     inner: DeviceRegistry,
 }
 
 impl DeviceRegistry {
-    /// Convenience constructor for tests and call sites that do not need to
-    /// hydrate access codes or attach explicit video endpoints. Production code
-    /// goes through [`DeviceRegistryBuilder`] so hydration can happen before
-    /// the registry is frozen.
+    /// Convenience constructor for tests and call sites that do not need
+    /// to hydrate access codes or attach explicit video endpoints.
+    /// Production code goes through [`DeviceRegistryBuilder`] so
+    /// hydration can happen before the registry is frozen.
     #[cfg(test)]
     pub(crate) fn new(cloud_devices: Vec<CloudDevice>, local_devices: Vec<LocalDevice>) -> Self {
         DeviceRegistryBuilder::new(cloud_devices, local_devices, Vec::new()).build()
@@ -246,10 +252,26 @@ impl DeviceRegistry {
             .and_then(|index| self.entries.get(*index))
     }
 
-    pub(crate) fn local_devices(&self) -> Vec<LocalDevice> {
+    /// All Bambu entries paired with their typed capabilities. Use this
+    /// instead of `entries()` + a `match` when you only care about Bambu.
+    pub(crate) fn bambu_entries(&self) -> impl Iterator<Item = (&DeviceEntry, &BambuCapabilities)> {
         self.entries
             .iter()
-            .filter_map(|entry| entry.local().cloned())
+            .filter_map(|entry| entry.bambu().map(|bambu| (entry, bambu)))
+    }
+
+    /// All Snapmaker entries paired with their typed capabilities.
+    pub(crate) fn snapmaker_entries(
+        &self,
+    ) -> impl Iterator<Item = (&DeviceEntry, &SnapmakerCapabilities)> {
+        self.entries
+            .iter()
+            .filter_map(|entry| entry.snapmaker().map(|snap| (entry, snap)))
+    }
+
+    pub(crate) fn local_devices(&self) -> Vec<LocalDevice> {
+        self.bambu_entries()
+            .filter_map(|(_, bambu)| bambu.local_mqtt.clone())
             .collect()
     }
 }
@@ -373,7 +395,10 @@ mod tests {
         assert_eq!(devices[0].id, "printer-b");
         assert_eq!(devices[1].id, "printer-a");
         assert_eq!(
-            registry.get("printer-a").unwrap().access_code(),
+            registry
+                .get("printer-a")
+                .and_then(|entry| entry.bambu())
+                .and_then(|bambu| bambu.access_code()),
             Some("12345678")
         );
     }
@@ -409,10 +434,9 @@ mod tests {
         );
 
         let cloud_ids: Vec<_> = registry
-            .entries()
-            .iter()
-            .filter(|entry| entry.has_cloud_mqtt())
-            .map(|entry| entry.id().to_owned())
+            .bambu_entries()
+            .filter(|(_, bambu)| bambu.cloud_mqtt)
+            .map(|(entry, _)| entry.id().to_owned())
             .collect();
         assert_eq!(cloud_ids, vec!["printer-a".to_owned()]);
     }
@@ -429,13 +453,16 @@ mod tests {
         );
 
         assert_eq!(
-            registry.get("printer-a").unwrap().access_code(),
+            registry
+                .get("printer-a")
+                .and_then(|entry| entry.bambu())
+                .and_then(|bambu| bambu.access_code()),
             Some("12345678")
         );
     }
 
     #[test]
-    fn registry_source_follows_active_live_capability() {
+    fn registry_capability_split_marks_local_and_cloud_paths() {
         let registry = DeviceRegistry::new(
             vec![CloudDevice {
                 id: Some("printer-a".to_owned()),
@@ -444,9 +471,12 @@ mod tests {
             vec![local_device("printer-b", Some("Office"))],
         );
 
-        assert!(registry.get("printer-a").unwrap().has_cloud_mqtt());
-        assert!(registry.get("printer-a").unwrap().local().is_none());
-        assert!(!registry.get("printer-b").unwrap().has_cloud_mqtt());
-        assert!(registry.get("printer-b").unwrap().local().is_some());
+        let printer_a = registry.get("printer-a").unwrap().bambu().unwrap();
+        let printer_b = registry.get("printer-b").unwrap().bambu().unwrap();
+
+        assert!(printer_a.cloud_mqtt);
+        assert!(printer_a.local_mqtt.is_none());
+        assert!(!printer_b.cloud_mqtt);
+        assert!(printer_b.local_mqtt.is_some());
     }
 }

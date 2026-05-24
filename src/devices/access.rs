@@ -65,27 +65,43 @@ pub(super) async fn hydrate_local_config(
     Ok(())
 }
 
+/// Hydrate a Bambu entry's access code (from an explicit video endpoint
+/// or from cloud `/bind` metadata) and refresh its name/online fields
+/// from `/bind` when those are missing. No-ops for non-Bambu entries.
 pub(super) async fn hydrate_device_entry(
     entry: &mut DeviceEntry,
     video: Option<&VideoEndpoint>,
     bind_catalog: &mut BindCatalog<'_>,
 ) -> Result<()> {
-    if !entry.has_access_code() {
+    let device_id = entry.id().to_owned();
+    let Some(bambu) = entry.bambu_mut() else {
+        return Ok(());
+    };
+    if !bambu.has_access_code() {
         if let Some(video) = video {
-            entry.set_access_code(video.access_code().map(|code| Secret::new(code.to_owned())));
+            bambu.access_code = video.access_code().map(|code| Secret::new(code.to_owned()));
         }
     }
-    if !entry.has_access_code() {
-        let device_id = entry.id().to_owned();
-        if let Some(metadata) = bind_catalog.load_device_from_cloud(&device_id).await? {
-            entry.set_access_code(metadata.access_code);
-            let device = entry.device_mut();
-            if !has_text(device.name.as_deref()) {
-                device.name = metadata.name;
-            }
-            device.online = device.online.or(metadata.online);
-        }
+    if bambu.has_access_code() {
+        return Ok(());
     }
+
+    let Some(metadata) = bind_catalog.load_device_from_cloud(&device_id).await? else {
+        return Ok(());
+    };
+
+    // Re-borrow after the async `load_device_from_cloud` boundary; the
+    // entry's variant doesn't change so this always matches.
+    let bambu = entry
+        .bambu_mut()
+        .expect("entry variant cannot change between borrows");
+    bambu.access_code = metadata.access_code;
+
+    let device = entry.device_mut();
+    if !has_text(device.name.as_deref()) {
+        device.name = metadata.name;
+    }
+    device.online = device.online.or(metadata.online);
     Ok(())
 }
 
@@ -121,7 +137,10 @@ mod tests {
             .unwrap();
 
         assert_eq!(
-            local.access_code.as_ref().map(|code| code.expose().as_str()),
+            local
+                .access_code
+                .as_ref()
+                .map(|code| code.expose().as_str()),
             Some("12345678")
         );
     }

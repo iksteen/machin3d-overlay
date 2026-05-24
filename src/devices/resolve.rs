@@ -364,10 +364,9 @@ mod tests {
             .expect("explicit cloud device should not require /bind metadata");
 
         let cloud_ids: Vec<_> = registry
-            .entries()
-            .iter()
-            .filter(|entry| entry.has_cloud_mqtt())
-            .map(|entry| entry.id().to_owned())
+            .bambu_entries()
+            .filter(|(_, bambu)| bambu.cloud_mqtt)
+            .map(|(entry, _)| entry.id().to_owned())
             .collect();
         assert_eq!(cloud_ids, vec!["printer-a".to_owned()]);
         assert_eq!(registry.first().unwrap().id(), "printer-a");

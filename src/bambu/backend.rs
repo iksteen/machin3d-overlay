@@ -1,13 +1,13 @@
-//! Bambu-specific background wiring: cloud broker supervisor (shared across
-//! all cloud devices) plus one local broker supervisor per local device.
+//! Bambu-specific background wiring: cloud broker supervisor (shared
+//! across all cloud devices) plus one local broker supervisor per local
+//! device.
 //!
-//! Filters the registry on [`Backend::Bambu`] so a future Snapmaker entry is
-//! never handed to a Bambu MQTT supervisor.
+//! Iterates the registry via [`DeviceRegistry::bambu_entries`] so
+//! Snapmaker entries are never handed to a Bambu MQTT supervisor.
 
 use anyhow::Result;
 
 use crate::{
-    backend::Backend,
     cloud::{cloud_mqtt_startup, CloudSession},
     devices::DeviceRegistry,
     local::{LocalDevice, MqttEndpoint},
@@ -45,18 +45,15 @@ pub(crate) fn spawn(
 
 fn bambu_cloud_mqtt_ids(registry: &DeviceRegistry) -> Vec<String> {
     registry
-        .entries()
-        .iter()
-        .filter(|entry| entry.backend() == Backend::Bambu && entry.has_cloud_mqtt())
-        .map(|entry| entry.id().to_owned())
+        .bambu_entries()
+        .filter(|(_, bambu)| bambu.cloud_mqtt)
+        .map(|(entry, _)| entry.id().to_owned())
         .collect()
 }
 
 fn bambu_local_devices(registry: &DeviceRegistry) -> Vec<LocalDevice> {
     registry
-        .entries()
-        .iter()
-        .filter(|entry| entry.backend() == Backend::Bambu)
-        .filter_map(|entry| entry.local().cloned())
+        .bambu_entries()
+        .filter_map(|(_, bambu)| bambu.local_mqtt.clone())
         .collect()
 }

@@ -2,8 +2,8 @@
 //!
 //! Each vendor's video source carries everything its worker needs (host,
 //! credentials, TLS connector, remembered endpoints). `VideoStreams` only
-//! sees the enum; it never matches on `Backend` or reaches into vendor
-//! fields. Dispatch into the actual worker lives in `VideoSource::run`.
+//! sees the enum and never reaches into vendor-specific fields.
+//! Dispatch into the actual worker lives in `VideoSource::run`.
 
 use std::sync::Arc;
 
@@ -12,9 +12,8 @@ use tokio::sync::Mutex;
 use tokio_native_tls::TlsConnector;
 
 use crate::{
-    backend::Backend,
     device_tls,
-    devices::DeviceEntry,
+    devices::{DeviceCapabilities, DeviceEntry},
     secret::Secret,
     service::ShutdownReceiver,
     snapmaker::{SnapMqttCreds, SnapmakerEndpoint},
@@ -74,13 +73,13 @@ pub(crate) fn video_source_for(
     bambu_endpoints: Option<&Vec<VideoEndpoint>>,
     tls: &TlsConnector,
 ) -> Option<VideoSource> {
-    match entry.backend() {
-        Backend::Bambu => {
+    match entry.capabilities() {
+        DeviceCapabilities::Bambu(bambu) => {
             let endpoints = bambu_endpoints?.clone();
             if endpoints.is_empty() {
                 return None;
             }
-            let access_code = entry.access_code()?;
+            let access_code = bambu.access_code()?;
             Some(VideoSource::Bambu(BambuVideoSource {
                 device_id: entry.id().to_owned(),
                 endpoints,
@@ -89,15 +88,11 @@ pub(crate) fn video_source_for(
                 remembered: Mutex::new(None),
             }))
         }
-        Backend::Snapmaker => {
-            let endpoint = entry.snapmaker_endpoint()?.clone();
-            let mtls = entry.snapmaker_mtls().cloned();
-            Some(VideoSource::Snapmaker(SnapmakerVideoSource {
-                device_id: entry.id().to_owned(),
-                endpoint,
-                mtls,
-            }))
-        }
+        DeviceCapabilities::Snapmaker(snap) => Some(VideoSource::Snapmaker(SnapmakerVideoSource {
+            device_id: entry.id().to_owned(),
+            endpoint: snap.endpoint.clone(),
+            mtls: snap.mtls.clone(),
+        })),
     }
 }
 

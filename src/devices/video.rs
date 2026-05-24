@@ -97,8 +97,13 @@ impl ExplicitVideoEndpoints {
                     "--bbl-video-device `{video}` is for device `{device_id}`, but no matching cloud or local device is configured"
                 );
             };
+            if entry.bambu_mut().is_none() {
+                anyhow::bail!(
+                    "--bbl-video-device `{video}` matches device `{device_id}` which is not a Bambu device"
+                );
+            }
             hydrate_device_entry(entry, Some(&video), bind_catalog).await?;
-            entry.set_explicit_video(video);
+            entry.bambu_mut().expect("checked above").explicit_video = Some(video);
         }
         Ok(())
     }
@@ -123,8 +128,8 @@ pub(crate) async fn resolve_video_endpoints(
     let mut probes = tokio::task::JoinSet::new();
     let semaphore = Arc::new(Semaphore::new(STARTUP_PROBE_CONCURRENCY));
 
-    for entry in registry.entries() {
-        let Some(endpoint) = entry.explicit_video() else {
+    for (entry, bambu) in registry.bambu_entries() {
+        let Some(endpoint) = bambu.explicit_video.as_ref() else {
             continue;
         };
         info!(
@@ -281,7 +286,10 @@ mod tests {
 
         let registry = builder.build();
         assert_eq!(
-            registry.get("printer-a").unwrap().access_code(),
+            registry
+                .get("printer-a")
+                .and_then(|entry| entry.bambu())
+                .and_then(|bambu| bambu.access_code()),
             Some("12345678")
         );
     }

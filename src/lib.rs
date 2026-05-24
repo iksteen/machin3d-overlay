@@ -1,6 +1,5 @@
 pub(crate) mod assets;
 pub(crate) mod auth;
-pub(crate) mod backend;
 pub mod bambu;
 pub mod cli;
 pub(crate) mod cloud;

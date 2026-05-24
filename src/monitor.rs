@@ -76,11 +76,14 @@ fn select_monitor_target(
         None => registry.first().context("no devices are configured")?,
     };
     let device_id = entry.id();
+    let bambu = entry.bambu().with_context(|| {
+        format!("selected device `{device_id}` is not a Bambu device; `mqtt` only supports Bambu printers")
+    })?;
 
-    if let Some(local) = entry.local() {
+    if let Some(local) = bambu.local_mqtt.as_ref() {
         return Ok(MonitorTarget::Local(local.clone()));
     }
-    if entry.has_cloud_mqtt() {
+    if bambu.cloud_mqtt {
         return Ok(MonitorTarget::Cloud(device_id.to_owned()));
     }
 

@@ -3,7 +3,7 @@ use std::collections::HashSet;
 use axum::{extract::State, Json};
 use serde::Serialize;
 
-use crate::devices::{DeviceRegistry, DeviceSource};
+use crate::devices::{DeviceCapabilities, DeviceEntry, DeviceRegistry};
 
 use super::{paths, AppState};
 
@@ -54,7 +54,7 @@ fn known_devices_payload(
                     id: device.id.clone(),
                     name: device.name.clone(),
                     online: device.online,
-                    source: device_source_label(entry.source()),
+                    source: device_source_label(entry),
                     paths: device_paths(&device.id, has_video),
                 }
             })
@@ -62,10 +62,15 @@ fn known_devices_payload(
     }
 }
 
-fn device_source_label(source: DeviceSource) -> &'static str {
-    match source {
-        DeviceSource::Cloud => "cloud",
-        DeviceSource::Local => "local",
+/// Whether the device's live data ultimately comes from the Bambu cloud
+/// MQTT broker (`"cloud"`) or from a printer-local MQTT broker
+/// (`"local"`). Snapmaker devices are always local; Bambu devices are
+/// local when a `--bbl-local-device` was configured for them.
+fn device_source_label(entry: &DeviceEntry) -> &'static str {
+    match entry.capabilities() {
+        DeviceCapabilities::Bambu(bambu) if bambu.local_mqtt.is_some() => "local",
+        DeviceCapabilities::Bambu(_) => "cloud",
+        DeviceCapabilities::Snapmaker(_) => "local",
     }
 }
 

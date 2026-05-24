@@ -10,9 +10,8 @@ use tokio::task::{Id, JoinError, JoinSet};
 use tracing::{debug, error, warn};
 
 use crate::{
-    backend::Backend,
     cloud::CloudSession,
-    devices::DeviceRegistry,
+    devices::{DeviceCapabilities, DeviceRegistry},
     live::LiveStateStore,
     mqtt::MqttRuntime,
     service::ShutdownReceiver,
@@ -33,13 +32,14 @@ async fn fetch_thumbnail(
 ) -> Result<ThumbnailStatus> {
     match context {
         FetchContext::Bambu(report) => {
-            let entry = registry
+            let bambu = registry
                 .get(device_id)
-                .with_context(|| format!("device `{device_id}` is not known"))?;
-            if let Some(local) = entry.local() {
+                .and_then(|entry| entry.bambu())
+                .with_context(|| format!("device `{device_id}` is not a known Bambu device"))?;
+            if let Some(local) = bambu.local_mqtt.as_ref() {
                 return local_source::fetch_thumbnail(device_id, local, report).await;
             }
-            if entry.has_cloud_mqtt() {
+            if bambu.cloud_mqtt {
                 return cloud_source::fetch_thumbnail(cloud, device_id, report)
                     .await
                     .map(ThumbnailStatus::Ready);
@@ -146,14 +146,19 @@ impl ThumbnailService {
         let order = JobOrder::new(mqtt_snapshot.revision);
         for entry in self.inner.registry.entries() {
             let device_id = entry.id();
-            let refresh = match entry.backend() {
-                Backend::Bambu => self
-                    .refresh_bambu_device(device_id, mqtt_snapshot.devices.get(device_id), order)
-                    .await,
-                Backend::Snapmaker => {
+            let refresh = match entry.capabilities() {
+                DeviceCapabilities::Bambu(_) => {
+                    self.refresh_bambu_device(
+                        device_id,
+                        mqtt_snapshot.devices.get(device_id),
+                        order,
+                    )
+                    .await
+                }
+                DeviceCapabilities::Snapmaker(snap) => {
                     self.refresh_snapmaker_device(
                         device_id,
-                        entry.snapmaker_endpoint(),
+                        &snap.endpoint,
                         live_snapshot.devices.get(device_id),
                         order,
                     )
@@ -176,16 +181,16 @@ impl ThumbnailService {
         };
         let mqtt_snapshot = self.inner.mqtt.snapshot().await;
         let order = JobOrder::new(mqtt_snapshot.revision);
-        match entry.backend() {
-            Backend::Bambu => {
+        match entry.capabilities() {
+            DeviceCapabilities::Bambu(_) => {
                 self.refresh_bambu_device(device_id, mqtt_snapshot.devices.get(device_id), order)
                     .await
             }
-            Backend::Snapmaker => {
+            DeviceCapabilities::Snapmaker(snap) => {
                 let live_snapshot = self.inner.live.snapshot().await;
                 self.refresh_snapmaker_device(
                     device_id,
-                    entry.snapmaker_endpoint(),
+                    &snap.endpoint,
                     live_snapshot.devices.get(device_id),
                     order,
                 )
@@ -220,14 +225,10 @@ impl ThumbnailService {
     async fn refresh_snapmaker_device(
         &self,
         device_id: &str,
-        endpoint: Option<&crate::snapmaker::SnapmakerEndpoint>,
+        endpoint: &crate::snapmaker::SnapmakerEndpoint,
         state: Option<&crate::live::DeviceLiveState>,
         order: JobOrder,
     ) -> Result<()> {
-        let Some(endpoint) = endpoint else {
-            self.inner.jobs.clear(device_id, order).await;
-            return Ok(());
-        };
         let Some(state) = state.filter(|state| state.is_active_task()) else {
             self.inner.jobs.clear(device_id, order).await;
             return Ok(());
