@@ -18,7 +18,7 @@ use crate::{
     live::PrinterReport,
     local::LocalDevice,
     secret::Secret,
-    snapmaker::{SnapmakerDevice, SnapmakerEndpoint},
+    snapmaker::{SnapMqttCreds, SnapmakerDevice, SnapmakerEndpoint},
     video::VideoEndpoint,
 };
 use tracing::warn;
@@ -85,6 +85,7 @@ struct DeviceCapabilities {
     local_mqtt: Option<LocalDevice>,
     explicit_video: Option<VideoEndpoint>,
     snapmaker_endpoint: Option<SnapmakerEndpoint>,
+    snapmaker_mtls: Option<SnapMqttCreds>,
 }
 
 #[derive(Debug, Clone)]
@@ -127,6 +128,7 @@ impl DeviceEntry {
             credentials: DeviceCredentials::default(),
             capabilities: DeviceCapabilities {
                 snapmaker_endpoint: Some(device.endpoint),
+                snapmaker_mtls: device.mtls,
                 ..DeviceCapabilities::default()
             },
             backend: Backend::Snapmaker,
@@ -188,6 +190,10 @@ impl DeviceEntry {
 
     pub(crate) fn snapmaker_endpoint(&self) -> Option<&SnapmakerEndpoint> {
         self.capabilities.snapmaker_endpoint.as_ref()
+    }
+
+    pub(crate) fn snapmaker_mtls(&self) -> Option<&SnapMqttCreds> {
+        self.capabilities.snapmaker_mtls.as_ref()
     }
 
     pub(crate) fn explicit_video(&self) -> Option<&VideoEndpoint> {

@@ -1,4 +1,4 @@
-use std::time::Duration;
+use std::{path::PathBuf, time::Duration};
 
 use anyhow::Result;
 use tracing::warn;
@@ -30,6 +30,7 @@ pub(crate) struct ServerConfig {
     pub cloud_devices: Vec<String>,
     pub video_endpoints: Vec<VideoEndpoint>,
     pub snapmaker_devices: Vec<SnapmakerDeviceConfig>,
+    pub snap_token_file: Option<PathBuf>,
 }
 
 impl Default for ServerConfig {
@@ -41,6 +42,7 @@ impl Default for ServerConfig {
             cloud_devices: Vec::new(),
             video_endpoints: Vec::new(),
             snapmaker_devices: Vec::new(),
+            snap_token_file: None,
         }
     }
 }
@@ -99,6 +101,7 @@ impl ServiceGraph {
             &config.local_devices,
             &config.video_endpoints,
             &config.snapmaker_devices,
+            config.snap_token_file.as_deref(),
         )
         .await?;
         let video_endpoints = resolve_video_endpoints(&registry).await?;

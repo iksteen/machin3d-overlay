@@ -165,18 +165,38 @@ State, thumbnails, and the camera stream are all wired up. Bambu Cloud is not
 required for Snapmaker — `serve` works without a token file when only
 `--snap-device` is configured.
 
-### Camera caveat
+### Camera
 
 The U1's camera only writes fresh frames to `monitor.jpg` while its camera
-daemon is in "monitor" mode. The overlay polls that file and serves it as
-MJPEG, which means fresh frames flow only while the daemon is awake.
+daemon is in "monitor" mode. To wake it reliably the overlay drives the
+same bespoke mTLS MQTT control plane Snapmaker Orca uses. Pair once:
 
-In practice the daemon is awake during a print and while Snapmaker Orca's
-camera viewer is open on the same network; outside those, `monitor.jpg`
-stays frozen on the last captured frame, and so does the overlay's video.
-The overlay does send `camera.start_monitor` when it begins streaming, but
-that request alone does not reliably wake the daemon — the conditions that
-do are still being investigated.
+```sh
+# On the printer: switch to LAN mode (Settings → Network) so the approval popup can appear.
+bambu-overlay snap-pair <HOST>          # tap "Approve" on the printer screen
+# You can switch the printer back to cloud mode now — the issued cert keeps working.
+bambu-overlay serve --snap-device <HOST> # HOST must match the snap-pair value
+```
+
+`snap-pair` runs the LAN bootstrap on the printer's cleartext MQTT broker
+(`:1884`), prints a "tap Approve" prompt, and on approval writes the
+printer-issued client cert/key/CA, SN, and stable client ID to
+`$XDG_STATE_HOME/bambu-overlay/snap-tokens.json` (mode `0600`). `serve`
+loads the token and uses the cert/key/CA to publish `camera.start_monitor`
+/ `camera.stop_monitor` on the printer's mTLS broker (`:8883`). Reusing
+the same client ID across `snap-pair` runs keeps the printer's auth DB
+warm so subsequent pairings (e.g. after rotating tokens) do not require a
+second tap.
+
+**LAN mode is only required for the initial pairing** (to expose the
+approval popup). Once you have a token on disk, the printer can be in
+cloud mode for normal operation and the overlay's mTLS connection still
+works.
+
+Without `snap-pair`, the overlay still serves `/devices/<id>/video.mjpeg`
+but does not attempt to wake the camera daemon. Frames will only update
+while something else (a print job, Orca's camera viewer) is keeping the
+daemon active; otherwise you'll get the last-captured frame, frozen.
 
 ## Video
 

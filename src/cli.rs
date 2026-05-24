@@ -12,9 +12,14 @@ use crate::{
     monitor::{monitor_mqtt, MonitorConfig},
     secret::Secret,
     server::{serve, ServerConfig, DEFAULT_HOST, DEFAULT_PORT},
-    snapmaker::SnapmakerDeviceConfig,
+    snapmaker::{
+        default_snap_token_path, fresh_clientid, load_snap_tokens, pair, upsert_snap_token,
+        PairConfig, SnapmakerDeviceConfig,
+    },
     video::VideoEndpoint,
 };
+
+const SNAP_BOOTSTRAP_PORT: u16 = 1884;
 
 #[derive(Parser)]
 #[command(name = "bambu-overlay", version, about = "3D printer OBS overlay")]
@@ -33,6 +38,8 @@ enum Command {
     Mqtt(MqttArgs),
     #[command(about = "Serve an OBS browser overlay page")]
     Serve(ServeArgs),
+    #[command(about = "Pair this overlay with a Snapmaker U1 (tap Approve on the printer screen)")]
+    SnapPair(SnapPairArgs),
 }
 
 #[derive(Args, Clone)]
@@ -125,6 +132,48 @@ struct ServeArgs {
         help_heading = "Snapmaker"
     )]
     snapmaker_devices: Vec<SnapmakerDeviceConfig>,
+    #[arg(
+        long = "snap-token-file",
+        value_name = "PATH",
+        default_value_os_t = default_snap_token_path().to_path_buf(),
+        help = "Snapmaker pairing token JSON path. Loaded at startup to enable reliable camera wake-up over mTLS; HOST in --snap-device must match the host passed to `snap-pair`",
+        help_heading = "Snapmaker"
+    )]
+    snap_token_file: PathBuf,
+}
+
+#[derive(Args)]
+struct SnapPairArgs {
+    #[arg(
+        value_name = "HOST",
+        help = "Snapmaker printer host or IP; must match the value passed to `serve --snap-device`"
+    )]
+    host: String,
+    #[arg(
+        long = "port",
+        default_value_t = SNAP_BOOTSTRAP_PORT,
+        help = "Cleartext MQTT bootstrap port. The U1 listens on 1884 by default"
+    )]
+    port: u16,
+    #[arg(
+        long = "snap-token-file",
+        value_name = "PATH",
+        default_value_os_t = default_snap_token_path().to_path_buf(),
+        help = "Snapmaker pairing token JSON path"
+    )]
+    token_file: PathBuf,
+    #[arg(
+        long = "timeout",
+        default_value_t = 180.0,
+        value_parser = positive_f64,
+        help = "Seconds to wait for the approval tap on the printer screen"
+    )]
+    timeout: f64,
+    #[arg(
+        long = "clientid",
+        help = "Reuse a stable client identifier instead of generating a new one (allows re-pairing without re-tapping if the printer remembers us)"
+    )]
+    clientid: Option<String>,
 }
 
 #[derive(Args)]
@@ -183,6 +232,7 @@ pub async fn run(cli: Cli) -> Result<()> {
         Command::Devices(args) => devices_cmd(args).await,
         Command::Mqtt(args) => mqtt_cmd(args).await,
         Command::Serve(args) => serve_cmd(args).await,
+        Command::SnapPair(args) => snap_pair_cmd(args).await,
     }
 }
 
@@ -262,6 +312,51 @@ async fn devices_cmd(args: DevicesArgs) -> Result<()> {
         };
         println!("{id:<24}  {name:<32}  {online:<8}  {access_code:<12}");
     }
+    Ok(())
+}
+
+async fn snap_pair_cmd(args: SnapPairArgs) -> Result<()> {
+    let host = args.host.trim();
+    if host.is_empty() {
+        bail!("snap-pair host must not be empty");
+    }
+
+    let existing = load_snap_tokens(&args.token_file)?;
+    let clientid = args
+        .clientid
+        .or_else(|| {
+            existing
+                .iter()
+                .find(|entry| entry.host == host)
+                .map(|entry| entry.clientid.clone())
+        })
+        .unwrap_or_else(fresh_clientid);
+
+    let config = PairConfig {
+        host: host.to_owned(),
+        clear_port: args.port,
+        approval_timeout: Duration::from_secs_f64(args.timeout),
+        clientid,
+    };
+
+    println!(
+        "Connecting to {host}:{} (cleartext MQTT) with clientid `{}`...",
+        args.port, config.clientid
+    );
+
+    let token = pair(config, |message| println!("{message}")).await?;
+
+    println!(
+        "Approved. Printer SN: {}, mTLS port: {}",
+        token.sn, token.mqtt_port
+    );
+
+    upsert_snap_token(&args.token_file, token)?;
+
+    println!(
+        "Saved pairing to {}. Run `bambu-overlay serve --snap-device {host}` to use it.",
+        args.token_file.display()
+    );
     Ok(())
 }
 
@@ -350,6 +445,7 @@ impl From<&ServeArgs> for ServerConfig {
             cloud_devices: args.devices.cloud_devices.clone(),
             video_endpoints: args.video_devices.clone(),
             snapmaker_devices: args.snapmaker_devices.clone(),
+            snap_token_file: Some(args.snap_token_file.clone()),
         }
     }
 }

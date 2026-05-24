@@ -17,12 +17,12 @@ use crate::{
     devices::DeviceEntry,
     secret::Secret,
     service::ShutdownReceiver,
-    snapmaker::SnapmakerEndpoint,
+    snapmaker::{SnapMqttCreds, SnapmakerEndpoint},
 };
 
 use super::{
-    connection::run_stream_worker, endpoint::VideoEndpoint,
-    snapmaker::run_snapmaker_stream_worker, stream::DeviceVideoStream,
+    connection::run_stream_worker, endpoint::VideoEndpoint, snapmaker::run_snapmaker_stream_worker,
+    stream::DeviceVideoStream,
 };
 
 pub(crate) enum VideoSource {
@@ -41,6 +41,7 @@ pub(crate) struct BambuVideoSource {
 pub(crate) struct SnapmakerVideoSource {
     pub(crate) device_id: String,
     pub(crate) endpoint: SnapmakerEndpoint,
+    pub(crate) mtls: Option<SnapMqttCreds>,
 }
 
 impl VideoSource {
@@ -90,9 +91,11 @@ pub(crate) fn video_source_for(
         }
         Backend::Snapmaker => {
             let endpoint = entry.snapmaker_endpoint()?.clone();
+            let mtls = entry.snapmaker_mtls().cloned();
             Some(VideoSource::Snapmaker(SnapmakerVideoSource {
                 device_id: entry.id().to_owned(),
                 endpoint,
+                mtls,
             }))
         }
     }

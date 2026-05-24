@@ -1,19 +1,22 @@
-use std::{collections::HashSet, sync::Arc};
+use std::{collections::HashSet, path::Path, sync::Arc};
 
 use anyhow::{Context, Result};
 use tokio::{sync::Semaphore, task::JoinSet};
-use tracing::info;
+use tracing::{info, warn};
 
 use crate::{
     cloud::{bound_cloud_devices, explicit_cloud_devices, CloudSession},
     local::{infer_local_device_id, LocalDevice, LocalEndpointConfig},
-    snapmaker::{probe_system_info, SnapmakerDevice, SnapmakerDeviceConfig},
+    snapmaker::{
+        load_snap_tokens, probe_system_info, SnapMqttCreds, SnapToken, SnapmakerDevice,
+        SnapmakerDeviceConfig,
+    },
     video::VideoEndpoint,
 };
 
 use super::{
-    access::{has_text, hydrate_local_config},
     access::BindCatalog,
+    access::{has_text, hydrate_local_config},
     registry::{DeviceRegistry, DeviceRegistryBuilder},
     video::ExplicitVideoEndpoints,
 };
@@ -26,6 +29,7 @@ pub(crate) async fn resolve_devices(
     local_configs: &[LocalEndpointConfig],
     video_endpoints: &[VideoEndpoint],
     snapmaker_configs: &[SnapmakerDeviceConfig],
+    snap_token_file: Option<&Path>,
 ) -> Result<DeviceRegistry> {
     ensure_unique_cloud_configs(cloud_configs)?;
     let explicit_video = ExplicitVideoEndpoints::resolve(video_endpoints).await?;
@@ -45,10 +49,13 @@ pub(crate) async fn resolve_devices(
         enumerate_cloud_catalog.then(|| cloud_devices.clone()),
     );
     let local = resolve_local_devices(local_configs, &explicit_video, &mut bind_catalog).await?;
-    let snapmaker_devices = resolve_snapmaker_devices(snapmaker_configs).await?;
+    let snap_tokens = load_snap_token_catalog(snap_token_file)?;
+    let snapmaker_devices = resolve_snapmaker_devices(snapmaker_configs, &snap_tokens).await?;
 
     let mut builder = DeviceRegistryBuilder::new(cloud_devices, local, snapmaker_devices);
-    explicit_video.attach(&mut builder, &mut bind_catalog).await?;
+    explicit_video
+        .attach(&mut builder, &mut bind_catalog)
+        .await?;
     let registry = builder.build();
     if registry.is_empty() {
         anyhow::bail!(
@@ -59,13 +66,38 @@ pub(crate) async fn resolve_devices(
     Ok(registry)
 }
 
+fn load_snap_token_catalog(token_file: Option<&Path>) -> Result<Vec<SnapToken>> {
+    let Some(path) = token_file else {
+        return Ok(Vec::new());
+    };
+    load_snap_tokens(path)
+}
+
+fn match_snap_token(host: &str, tokens: &[SnapToken]) -> Option<SnapToken> {
+    tokens.iter().find(|token| token.host == host).cloned()
+}
+
+fn snap_creds_from_token(serial: &str, token: SnapToken) -> SnapMqttCreds {
+    if token.sn != serial {
+        warn!(
+            paired_sn = %token.sn,
+            probed_sn = %serial,
+            host = %token.host,
+            "Snapmaker probed serial differs from paired SN; using probed SN for MQTT topic"
+        );
+    }
+    token.into()
+}
+
 async fn resolve_snapmaker_devices(
     configs: &[SnapmakerDeviceConfig],
+    snap_tokens: &[SnapToken],
 ) -> Result<Vec<SnapmakerDevice>> {
     let semaphore = Arc::new(Semaphore::new(STARTUP_PROBE_CONCURRENCY));
     let mut probes = JoinSet::new();
     for (index, config) in configs.iter().cloned().enumerate() {
         let semaphore = Arc::clone(&semaphore);
+        let matched_token = match_snap_token(&config.endpoint.host, snap_tokens);
         probes.spawn(async move {
             let _permit = semaphore
                 .acquire_owned()
@@ -77,12 +109,14 @@ async fn resolve_snapmaker_devices(
                     config.endpoint
                 )
             })?;
+            let mtls = matched_token.map(|token| snap_creds_from_token(&info.serial, token));
             Ok::<_, anyhow::Error>((
                 index,
                 SnapmakerDevice {
                     serial: info.serial,
                     endpoint: config.endpoint,
                     name: info.name,
+                    mtls,
                 },
             ))
         });
@@ -94,6 +128,7 @@ async fn resolve_snapmaker_devices(
         info!(
             device_id = %device.serial,
             endpoint = %device.endpoint,
+            paired = device.mtls.is_some(),
             "discovered Snapmaker device"
         );
         discovered[index] = Some(device);
@@ -324,7 +359,7 @@ mod tests {
 
     #[tokio::test]
     async fn explicit_cloud_devices_resolve_without_cloud_session() {
-        let registry = resolve_devices(None, &["printer-a".to_owned()], &[], &[], &[])
+        let registry = resolve_devices(None, &["printer-a".to_owned()], &[], &[], &[], None)
             .await
             .expect("explicit cloud device should not require /bind metadata");
 
@@ -340,7 +375,9 @@ mod tests {
 
     #[tokio::test]
     async fn no_configured_devices_errors_without_cloud_enumeration() {
-        let error = resolve_devices(None, &[], &[], &[], &[]).await.unwrap_err();
+        let error = resolve_devices(None, &[], &[], &[], &[], None)
+            .await
+            .unwrap_err();
 
         assert!(error.to_string().contains("no devices configured"));
     }

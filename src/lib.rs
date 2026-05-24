@@ -1,7 +1,7 @@
 pub(crate) mod assets;
 pub(crate) mod auth;
-pub mod bambu;
 pub(crate) mod backend;
+pub mod bambu;
 pub mod cli;
 pub(crate) mod cloud;
 pub(crate) mod device_summary;
@@ -12,6 +12,7 @@ pub(crate) mod local;
 pub(crate) mod monitor;
 pub(crate) mod mqtt;
 pub mod secret;
+pub(crate) mod secret_file;
 pub(crate) mod server;
 pub(crate) mod service;
 pub(crate) mod snapmaker;
