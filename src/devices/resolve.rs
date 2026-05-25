@@ -61,7 +61,7 @@ pub(crate) async fn resolve_devices(
     let registry = builder.build();
     if registry.is_empty() {
         anyhow::bail!(
-            "no devices configured; run `machin3d-overlay login`, set --bbl-cloud-device, --bbl-local-device, or --snap-device"
+            "no devices configured; run `machin3d-overlay bbl-login`, set --bbl-cloud-device, --bbl-local-device, or --snap-device"
         );
     }
 

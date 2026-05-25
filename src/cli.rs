@@ -34,11 +34,11 @@ pub struct Cli {
 #[derive(Subcommand)]
 enum Command {
     #[command(about = "Log in and store a Bambu Cloud access token")]
-    Login(LoginArgs),
+    BblLogin(LoginArgs),
     #[command(about = "List Bambu printers in the token account")]
-    Devices(DevicesArgs),
+    BblDevices(DevicesArgs),
     #[command(about = "Monitor Bambu MQTT events for one printer")]
-    Mqtt(MqttArgs),
+    BblMqtt(MqttArgs),
     #[command(about = "Serve an OBS browser overlay page")]
     Serve(ServeArgs),
     #[command(about = "Pair this overlay with a Snapmaker U1 (tap Approve on the printer screen)")]
@@ -231,15 +231,15 @@ struct DeviceSelectionArgs {
 
 pub async fn run(cli: Cli) -> Result<()> {
     match cli.command {
-        Command::Login(args) => login(args).await,
-        Command::Devices(args) => devices_cmd(args).await,
-        Command::Mqtt(args) => mqtt_cmd(args).await,
+        Command::BblLogin(args) => bbl_login(args).await,
+        Command::BblDevices(args) => bbl_devices_cmd(args).await,
+        Command::BblMqtt(args) => bbl_mqtt_cmd(args).await,
         Command::Serve(args) => serve_cmd(args).await,
         Command::SnapPair(args) => snap_pair_cmd(args).await,
     }
 }
 
-async fn login(args: LoginArgs) -> Result<()> {
+async fn bbl_login(args: LoginArgs) -> Result<()> {
     let client = client(&args.http)?;
     let account = match args.account {
         Some(account) => account,
@@ -290,7 +290,7 @@ async fn login(args: LoginArgs) -> Result<()> {
     Ok(())
 }
 
-async fn devices_cmd(args: DevicesArgs) -> Result<()> {
+async fn bbl_devices_cmd(args: DevicesArgs) -> Result<()> {
     let cloud = token_client(Some(args.token.token_file), args.timeout)?;
     let bound_devices = cloud
         .client
@@ -369,7 +369,7 @@ async fn serve_cmd(args: ServeArgs) -> Result<()> {
     serve(cloud, config).await
 }
 
-async fn mqtt_cmd(args: MqttArgs) -> Result<()> {
+async fn bbl_mqtt_cmd(args: MqttArgs) -> Result<()> {
     let cloud = optional_token_client(args.token.token_file.clone(), args.timeout)?;
     monitor_mqtt(cloud, MonitorConfig::from(&args)).await
 }
@@ -420,7 +420,7 @@ fn validate_token_freshness(token_data: &crate::bambu::auth::TokenData) -> Resul
         .with_timezone(&Utc);
     if expires_at <= Utc::now() {
         bail!(
-            "cached Bambu token expired at {}; run `machin3d-overlay login` again",
+            "cached Bambu token expired at {}; run `machin3d-overlay bbl-login` again",
             expires_at.to_rfc3339()
         );
     }
@@ -530,7 +530,7 @@ mod tests {
         let error = validate_token_freshness(&token).unwrap_err();
 
         assert!(error.to_string().contains("expired"));
-        assert!(error.to_string().contains("machin3d-overlay login"));
+        assert!(error.to_string().contains("machin3d-overlay bbl-login"));
     }
 
     #[test]

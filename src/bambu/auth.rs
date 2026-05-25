@@ -82,7 +82,7 @@ pub fn load_token(token_file: Option<PathBuf>) -> Result<TokenData> {
     let path = token_path(token_file);
     if !path.exists() {
         bail!(
-            "no cached Bambu token found at {}. Run `machin3d-overlay login` first",
+            "no cached Bambu token found at {}. Run `machin3d-overlay bbl-login` first",
             path.display()
         );
     }

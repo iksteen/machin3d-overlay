@@ -25,7 +25,7 @@ target/release/machin3d-overlay
 
 ```sh
 # Bambu printers: log in once, then serve.
-machin3d-overlay login
+machin3d-overlay bbl-login
 machin3d-overlay serve
 
 # Snapmaker U1: pair once (tap Approve on the printer), then serve.
@@ -86,7 +86,7 @@ Log in once. The token, API base, and Bambu MQTT user ID are stored in the
 token file:
 
 ```sh
-machin3d-overlay login
+machin3d-overlay bbl-login
 ```
 
 If you ever upgrade from a token created by 1.x, re-run `login` to populate
@@ -96,7 +96,7 @@ the stored user ID. The token file defaults to a path under
 List bound Bambu printers in the token account:
 
 ```sh
-machin3d-overlay devices
+machin3d-overlay bbl-devices
 ```
 
 Serve. With nothing else specified, `serve` enumerates the account's bound
@@ -143,10 +143,10 @@ entries that include access codes.
 line, useful for debugging):
 
 ```sh
-machin3d-overlay mqtt
-machin3d-overlay mqtt --device <DEVICE_ID>
-machin3d-overlay mqtt --bbl-cloud-device <DEVICE_ID>
-machin3d-overlay mqtt --bbl-local-device <HOST[:MQTT_PORT]>[,<ACCESS_CODE>[,<NAME>]]
+machin3d-overlay bbl-mqtt
+machin3d-overlay bbl-mqtt --device <DEVICE_ID>
+machin3d-overlay bbl-mqtt --bbl-cloud-device <DEVICE_ID>
+machin3d-overlay bbl-mqtt --bbl-local-device <HOST[:MQTT_PORT]>[,<ACCESS_CODE>[,<NAME>]]
 ```
 
 Same cloud enumeration and local resolution rules as `serve`. If no
@@ -296,7 +296,7 @@ sudo install -d -o machin3d-overlay -g machin3d-overlay -m 0700 /var/lib/machin3
 Create the Bambu token as that user so the resulting file is owned correctly:
 
 ```sh
-sudo -u machin3d-overlay /usr/local/bin/machin3d-overlay login --bbl-token-file /var/lib/machin3d-overlay/token.json
+sudo -u machin3d-overlay /usr/local/bin/machin3d-overlay bbl-login --bbl-token-file /var/lib/machin3d-overlay/token.json
 sudo chmod 0600 /var/lib/machin3d-overlay/token.json
 ```
 

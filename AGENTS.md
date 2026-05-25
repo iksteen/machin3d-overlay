@@ -17,7 +17,7 @@ node --test tests/overlay.test.mjs
 
 On Linux the video TLS path uses `native-tls`, so OpenSSL dev headers are required at build time (`pkg-config` + `libssl-dev` on Debian/Ubuntu).
 
-Runtime entry points come from the `machin3d-overlay` CLI: `login`, `devices`, `mqtt`, `serve`, `snap-pair`. See `README.md` for end-user invocation patterns; that file is the source of truth for user-visible behavior such as `--bbl-cloud-device` / `--bbl-local-device` / `--bbl-video-device` / `--snap-device` semantics, `/bind` enumeration rules, and Snapmaker pairing.
+Runtime entry points come from the `machin3d-overlay` CLI: `bbl-login`, `bbl-devices`, `bbl-mqtt`, `serve`, `snap-pair`. See `README.md` for end-user invocation patterns; that file is the source of truth for user-visible behavior such as `--bbl-cloud-device` / `--bbl-local-device` / `--bbl-video-device` / `--snap-device` semantics, `/bind` enumeration rules, and Snapmaker pairing.
 
 ## Architecture
 

@@ -70,7 +70,7 @@ pub(crate) fn cloud_mqtt_startup(
     }
 
     let cloud = cloud.with_context(|| {
-        "cloud MQTT devices require a Bambu Cloud token; run `machin3d-overlay login` or configure the device as --bbl-local-device"
+        "cloud MQTT devices require a Bambu Cloud token; run `machin3d-overlay bbl-login` or configure the device as --bbl-local-device"
     })?;
     Ok(Some(CloudMqttStartup {
         endpoint: endpoint.clone(),
