@@ -110,7 +110,8 @@ fn parse_port(port: &str) -> Result<u16, EndpointParseError> {
     if port.is_empty() {
         return Err(EndpointParseError::EmptyPort);
     }
-    port.parse::<u16>().map_err(|_| EndpointParseError::InvalidPort)
+    port.parse::<u16>()
+        .map_err(|_| EndpointParseError::InvalidPort)
 }
 
 #[cfg(test)]
@@ -151,7 +152,10 @@ mod tests {
 
     #[test]
     fn endpoint_parser_reports_structural_errors() {
-        assert_eq!(Endpoint::parse("", 8883), Err(EndpointParseError::EmptyHost));
+        assert_eq!(
+            Endpoint::parse("", 8883),
+            Err(EndpointParseError::EmptyHost)
+        );
         assert_eq!(
             Endpoint::parse("host:", 8883),
             Err(EndpointParseError::EmptyPort)

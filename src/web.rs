@@ -95,8 +95,13 @@ mod tests {
     use tower::ServiceExt;
 
     use crate::{
-        bambu::BambuCloudDevice, devices::DeviceRegistry, live::LiveStateStore, mqtt::MqttRuntime,
-        secret::Secret, service::Shutdown, thumbnail::ThumbnailService, video::VideoStreams,
+        bambu::{mqtt::MqttRuntime, BambuCloudDevice},
+        devices::DeviceRegistry,
+        live::LiveStateStore,
+        secret::Secret,
+        service::Shutdown,
+        thumbnail::ThumbnailService,
+        video::VideoStreams,
     };
 
     use super::{router, AppState};

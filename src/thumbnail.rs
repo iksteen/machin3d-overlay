@@ -1,8 +1,8 @@
 mod archive;
-mod cloud;
+mod bambu_cloud;
+mod bambu_local;
 mod job_state;
 mod jobs;
-mod local;
 mod service;
 mod snapmaker;
 

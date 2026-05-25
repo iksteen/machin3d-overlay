@@ -10,12 +10,6 @@ use crate::{
     live::{ConnectionStatus, DeviceConnection, DeviceLiveState, Material},
 };
 
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-pub(crate) enum TaskSource {
-    #[default]
-    PrinterStatus,
-}
-
 #[derive(Debug, Clone, Default)]
 pub(crate) struct DeviceSummary {
     pub(crate) id: String,
@@ -42,7 +36,6 @@ pub(crate) struct DeviceSummary {
     pub(crate) print_speed: Option<String>,
     pub(crate) materials: Vec<Material>,
     pub(crate) is_printing: bool,
-    pub(crate) task_source: TaskSource,
     pub(crate) plate_index: Option<String>,
 }
 

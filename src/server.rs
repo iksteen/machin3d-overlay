@@ -4,11 +4,13 @@ use anyhow::Result;
 use tracing::warn;
 
 use crate::{
-    bambu::{self, cloud::CloudSession, local::BambuLocalEndpointConfig, MQTT_HOST, MQTT_PORT},
+    bambu::{
+        self, cloud::CloudSession, local::BambuLocalEndpointConfig, mqtt::MqttRuntime, MQTT_HOST,
+        MQTT_PORT,
+    },
     devices::{resolve_devices, resolve_video_endpoints},
     endpoint::{Endpoint, MqttEndpoint},
     live::LiveStateStore,
-    mqtt::MqttRuntime,
     service::{wait_for_process_shutdown_signal, ServiceTasks, Shutdown},
     snapmaker::{self, SnapmakerDeviceConfig},
     thumbnail::ThumbnailService,

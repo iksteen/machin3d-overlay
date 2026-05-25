@@ -55,10 +55,7 @@ pub(super) async fn run_stream_worker(
     }
 }
 
-async fn run_stream_attempt(
-    source: &BambuVideoSource,
-    stream: &DeviceVideoStream,
-) -> Result<()> {
+async fn run_stream_attempt(source: &BambuVideoSource, stream: &DeviceVideoStream) -> Result<()> {
     let endpoints = candidate_endpoints(source).await;
     let mut last_error = None;
 
@@ -228,7 +225,6 @@ where
         _ = &mut no_clients => Ok(false),
     }
 }
-
 
 #[cfg(test)]
 mod tests {

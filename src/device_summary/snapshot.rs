@@ -1,9 +1,11 @@
 use crate::{
     devices::KnownDevice,
-    live::{ConnectionStatus, DeviceConnection, DeviceLiveState, Material, PrintActivity, PrinterReport},
+    live::{
+        ConnectionStatus, DeviceConnection, DeviceLiveState, Material, PrintActivity, PrinterReport,
+    },
 };
 
-use super::{DeviceSummary, TaskSource};
+use super::DeviceSummary;
 
 pub(super) fn summarize_device(
     device: &KnownDevice,
@@ -201,7 +203,6 @@ impl DeviceSummary {
             print_speed: snapshot.print_speed(),
             materials: snapshot.materials(),
             is_printing,
-            task_source: TaskSource::PrinterStatus,
             plate_index: None,
         }
     }

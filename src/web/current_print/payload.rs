@@ -7,7 +7,7 @@ use chrono::Utc;
 use serde::Serialize;
 
 use crate::{
-    device_summary::{DeviceSummary, TaskSource},
+    device_summary::DeviceSummary,
     live::{LiveStatusPayload, Material},
 };
 
@@ -113,7 +113,11 @@ impl From<DeviceSummary> for DevicePayload {
             filename: device.filename,
             task_name: device.task_name,
             task_status: device.task_status,
-            task_source: task_source_label(device.task_source),
+            // The only task source the overlay currently knows about is
+            // the printer's own status report. If we ever surface other
+            // sources (cloud queue, slicer-side metadata), this becomes a
+            // per-source label again.
+            task_source: "printer status",
             print_speed: device.print_speed,
             progress: progress.map(round_progress),
             progress_source: progress.map(|_| progress_source.to_owned()),
@@ -146,12 +150,6 @@ impl From<Material> for MaterialPayload {
             color: material.color,
             active: material.active,
         }
-    }
-}
-
-fn task_source_label(task_source: TaskSource) -> &'static str {
-    match task_source {
-        TaskSource::PrinterStatus => "printer status",
     }
 }
 
@@ -229,7 +227,7 @@ fn parse_bambu_datetime(text: &str) -> Option<chrono::DateTime<Utc>> {
 #[cfg(test)]
 mod tests {
     use crate::{
-        device_summary::{DeviceSummary, TaskSource},
+        device_summary::DeviceSummary,
         live::{ConnectionStatus, LiveStatusPayload, Material},
     };
 
@@ -253,7 +251,6 @@ mod tests {
                 title: Some("Calibration cube".to_owned()),
                 task_name: Some("Calibration cube".to_owned()),
                 task_status: Some("RUNNING".to_owned()),
-                task_source: TaskSource::PrinterStatus,
                 prediction: Some(3600.0),
                 progress: Some(25.04),
                 weight: Some("1250".to_owned()),

@@ -7,7 +7,6 @@ pub(crate) mod endpoint;
 pub(crate) mod errors;
 pub(crate) mod live;
 pub(crate) mod monitor;
-pub(crate) mod mqtt;
 pub mod secret;
 pub(crate) mod secret_file;
 pub(crate) mod server;

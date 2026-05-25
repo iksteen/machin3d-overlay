@@ -7,6 +7,7 @@ pub(crate) mod device_tls;
 mod error;
 pub(crate) mod local;
 mod models;
+pub(crate) mod mqtt;
 mod report;
 
 pub use client::BambuClient;

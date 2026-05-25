@@ -10,18 +10,17 @@ use tokio::task::{Id, JoinError, JoinSet};
 use tracing::{debug, error, warn};
 
 use crate::{
-    bambu::cloud::CloudSession,
+    bambu::{cloud::CloudSession, mqtt::MqttRuntime},
     devices::{DeviceCapabilities, DeviceRegistry},
     live::LiveStateStore,
-    mqtt::MqttRuntime,
     service::ShutdownReceiver,
 };
 
 use super::{
-    cloud as cloud_source, error_chain,
+    bambu_cloud, bambu_local, error_chain,
     job_state::{FetchContext, TaskKey},
     jobs::{JobCompletion, JobOrder, JobStart, ThumbnailJob, ThumbnailJobs},
-    local as local_source, snapmaker as snapmaker_source, ThumbnailStatus,
+    snapmaker, ThumbnailStatus,
 };
 
 async fn fetch_thumbnail(
@@ -37,17 +36,17 @@ async fn fetch_thumbnail(
                 .and_then(|entry| entry.bambu())
                 .with_context(|| format!("device `{device_id}` is not a known Bambu device"))?;
             if let Some(local) = bambu.local_mqtt.as_ref() {
-                return local_source::fetch_thumbnail(device_id, local, report).await;
+                return bambu_local::fetch_thumbnail(device_id, local, report).await;
             }
             if bambu.cloud_mqtt {
-                return cloud_source::fetch_thumbnail(cloud, device_id, report)
+                return bambu_cloud::fetch_thumbnail(cloud, device_id, report)
                     .await
                     .map(ThumbnailStatus::Ready);
             }
             anyhow::bail!("device `{device_id}` has no Bambu thumbnail data source")
         }
         FetchContext::Snapmaker { endpoint, filename } => {
-            snapmaker_source::fetch_thumbnail(endpoint, filename).await
+            snapmaker::fetch_thumbnail(endpoint, filename).await
         }
     }
 }
@@ -202,7 +201,7 @@ impl ThumbnailService {
     async fn refresh_bambu_device(
         &self,
         device_id: &str,
-        state: Option<&crate::mqtt::MqttDeviceState>,
+        state: Option<&crate::bambu::mqtt::MqttDeviceState>,
         order: JobOrder,
     ) -> Result<()> {
         let Some(state) = state else {

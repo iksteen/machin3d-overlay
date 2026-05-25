@@ -11,10 +11,10 @@ use crate::{
     bambu::{
         cloud::{cloud_mqtt_startup, CloudSession},
         local::BambuLocalDevice,
+        mqtt::{supervise_target, MqttRuntime, MqttTarget},
     },
     devices::DeviceRegistry,
     endpoint::MqttEndpoint,
-    mqtt::{supervise_target, MqttRuntime, MqttTarget},
     service::{ServiceTasks, Shutdown},
 };
 

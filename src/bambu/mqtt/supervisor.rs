@@ -154,8 +154,8 @@ mod tests {
     use std::collections::HashSet;
 
     use crate::{
+        bambu::mqtt::MqttRuntime,
         live::{ConnectionStatus, LiveStateStore},
-        mqtt::MqttRuntime,
     };
 
     use super::{handle_publish, ReportEvent};

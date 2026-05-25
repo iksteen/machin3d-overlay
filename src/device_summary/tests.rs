@@ -9,7 +9,7 @@ use crate::{
     live::{ConnectionStatus, DeviceConnection, DeviceLiveState},
 };
 
-use super::{summarize_devices, TaskSource};
+use super::summarize_devices;
 
 fn decode<T: DeserializeOwned>(value: Value) -> T {
     serde_json::from_value(value).expect("fixture should match typed API shape")
@@ -168,7 +168,6 @@ fn summarize_devices_uses_catalog_status_and_materials() {
 
     assert_eq!(summary.name, "Office X1");
     assert_eq!(summary.title.as_deref(), Some("Calibration cube"));
-    assert_eq!(summary.task_source, TaskSource::PrinterStatus);
     assert_eq!(summary.progress, Some(25.0));
     assert_eq!(summary.prediction, Some(3600.0));
     assert_eq!(summary.weight, None);

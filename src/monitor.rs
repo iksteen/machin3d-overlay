@@ -5,10 +5,10 @@ use crate::{
     bambu::{
         cloud::{cloud_mqtt_startup, CloudSession},
         local::{BambuLocalDevice, BambuLocalEndpointConfig},
+        mqtt::{monitor_target, MqttTarget},
     },
     devices::{resolve_devices, DeviceRegistry},
     endpoint::MqttEndpoint,
-    mqtt::{monitor_target, MqttTarget},
 };
 
 pub(crate) struct MonitorConfig {

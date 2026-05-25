@@ -1,9 +1,8 @@
 use anyhow::{Context, Result};
 
 use crate::{
-    bambu::{BambuClient, BambuCloudDevice},
+    bambu::{mqtt::MqttTarget, BambuClient, BambuCloudDevice},
     endpoint::MqttEndpoint,
-    mqtt::MqttTarget,
     secret::Secret,
 };
 

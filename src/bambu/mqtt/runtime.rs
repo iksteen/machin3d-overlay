@@ -270,7 +270,9 @@ impl MqttRuntime {
 
     async fn device_connection_key(&self, device_id: &str) -> Option<String> {
         let state = self.inner.read().await;
-        device_connections(&state.connections).get(device_id).cloned()
+        device_connections(&state.connections)
+            .get(device_id)
+            .cloned()
     }
 
     async fn mutate_state<R>(&self, mutation: impl FnOnce(&mut MqttState) -> R) -> R {

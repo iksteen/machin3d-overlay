@@ -1,6 +1,9 @@
 use std::{collections::HashMap, time::Instant};
 
-use crate::{bambu::PrinterStatus, mqtt::MqttDeviceState, snapmaker::SnapmakerEndpoint};
+use crate::{
+    bambu::{mqtt::MqttDeviceState, PrinterStatus},
+    snapmaker::SnapmakerEndpoint,
+};
 
 use super::{trimmed, ThumbnailStatus};
 
@@ -468,8 +471,8 @@ mod tests {
     use crate::bambu::PrinterStatus;
     use crate::thumbnail::{ThumbnailImage, ThumbnailStatus};
     use crate::{
+        bambu::mqtt::MqttDeviceState,
         live::{ConnectionStatus, DeviceConnection},
-        mqtt::MqttDeviceState,
     };
 
     #[test]

@@ -532,4 +532,3 @@ async fn sleep_or_no_clients(stream: &DeviceVideoStream, delay: Duration) {
         _ = &mut no_clients => {}
     }
 }
-
