@@ -21,7 +21,7 @@ fn device_path(device_id: &str, endpoint: &str) -> String {
 }
 
 fn path_segments(segments: &[&str]) -> String {
-    let mut url = Url::parse("http://bambu-overlay.local").expect("base URL should be valid");
+    let mut url = Url::parse("http://machin3d-overlay.local").expect("base URL should be valid");
     url.path_segments_mut()
         .expect("base URL should support path segments")
         .extend(segments);

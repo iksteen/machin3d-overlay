@@ -21,4 +21,4 @@ pub const API_BASE: &str = "https://api.bambulab.com";
 pub const MQTT_HOST: &str = "us.mqtt.bambulab.com";
 pub const MQTT_PORT: u16 = 8883;
 
-const USER_AGENT: &str = "bambu-overlay/0.1";
+const USER_AGENT: &str = "machin3d-overlay/0.1";

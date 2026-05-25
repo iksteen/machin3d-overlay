@@ -1,5 +1,5 @@
 use anyhow::Result;
-use bambu_overlay::cli;
+use machin3d_overlay::cli;
 use clap::Parser;
 use tracing_subscriber::{fmt, EnvFilter};
 

@@ -25,7 +25,7 @@ use crate::{
 const SNAP_BOOTSTRAP_PORT: u16 = 1884;
 
 #[derive(Parser)]
-#[command(name = "bambu-overlay", version, about = "3D printer OBS overlay")]
+#[command(name = "machin3d-overlay", version, about = "3D printer OBS overlay")]
 pub struct Cli {
     #[command(subcommand)]
     command: Command,
@@ -286,7 +286,7 @@ async fn login(args: LoginArgs) -> Result<()> {
         &uid,
     )?;
     println!("Saved Bambu access token to {}", token_path.display());
-    println!("Run `bambu-overlay serve` to start the overlay.");
+    println!("Run `machin3d-overlay serve` to start the overlay.");
     Ok(())
 }
 
@@ -357,7 +357,7 @@ async fn snap_pair_cmd(args: SnapPairArgs) -> Result<()> {
     upsert_snap_token(&args.token_file, token)?;
 
     println!(
-        "Saved pairing to {}. Run `bambu-overlay serve --snap-device {host}` to use it.",
+        "Saved pairing to {}. Run `machin3d-overlay serve --snap-device {host}` to use it.",
         args.token_file.display()
     );
     Ok(())
@@ -420,7 +420,7 @@ fn validate_token_freshness(token_data: &crate::bambu::auth::TokenData) -> Resul
         .with_timezone(&Utc);
     if expires_at <= Utc::now() {
         bail!(
-            "cached Bambu token expired at {}; run `bambu-overlay login` again",
+            "cached Bambu token expired at {}; run `machin3d-overlay login` again",
             expires_at.to_rfc3339()
         );
     }
@@ -530,7 +530,7 @@ mod tests {
         let error = validate_token_freshness(&token).unwrap_err();
 
         assert!(error.to_string().contains("expired"));
-        assert!(error.to_string().contains("bambu-overlay login"));
+        assert!(error.to_string().contains("machin3d-overlay login"));
     }
 
     #[test]

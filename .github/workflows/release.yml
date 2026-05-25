@@ -70,13 +70,13 @@ jobs:
           lockfile = Path("Cargo.lock")
           lock_text = lockfile.read_text()
           updated, replacements = re.subn(
-              r'(?ms)(\[\[package\]\]\nname = "bambu-overlay"\nversion = ")[^\"]+(")',
+              r'(?ms)(\[\[package\]\]\nname = "machin3d-overlay"\nversion = ")[^\"]+(")',
               rf'\g<1>{version}\2',
               lock_text,
               count=1,
           )
           if replacements != 1:
-              raise SystemExit("could not find bambu-overlay package version in Cargo.lock")
+              raise SystemExit("could not find machin3d-overlay package version in Cargo.lock")
           lockfile.write_text(updated)
           PY
 
@@ -108,19 +108,19 @@ jobs:
           - label: linux-amd64
             runner: ubuntu-24.04
             target: x86_64-unknown-linux-gnu
-            binary: bambu-overlay
+            binary: machin3d-overlay
             archive_kind: tar
             linker: ""
           - label: linux-aarch64
             runner: ubuntu-24.04-arm
             target: aarch64-unknown-linux-gnu
-            binary: bambu-overlay
+            binary: machin3d-overlay
             archive_kind: tar
             linker: ""
           - label: windows-x86_64
             runner: ubuntu-24.04
             target: x86_64-pc-windows-gnu
-            binary: bambu-overlay.exe
+            binary: machin3d-overlay.exe
             archive_kind: zip
             linker: x86_64-w64-mingw32-gcc
     steps:
@@ -175,7 +175,7 @@ jobs:
           ARCHIVE_KIND: ${{ matrix.archive_kind }}
         shell: bash
         run: |
-          package="bambu-overlay-v${VERSION}-${LABEL}"
+          package="machin3d-overlay-v${VERSION}-${LABEL}"
           mkdir -p "dist/$package"
           cp "target/$TARGET/release/$BINARY" "dist/$package/"
 
@@ -188,8 +188,8 @@ jobs:
       - name: Upload build artifact
         uses: actions/upload-artifact@v7
         with:
-          name: bambu-overlay-${{ matrix.label }}
-          path: dist/bambu-overlay-v${{ needs.version.outputs.version }}-${{ matrix.label }}.*
+          name: machin3d-overlay-${{ matrix.label }}
+          path: dist/machin3d-overlay-v${{ needs.version.outputs.version }}-${{ matrix.label }}.*
           if-no-files-found: error
 
   publish:

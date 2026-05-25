@@ -102,7 +102,7 @@ mod tests {
 
     impl ScratchDir {
         fn new(label: &str) -> Self {
-            let dir = env::temp_dir().join(format!("bambu-overlay-{label}-{}", Uuid::new_v4()));
+            let dir = env::temp_dir().join(format!("machin3d-overlay-{label}-{}", Uuid::new_v4()));
             fs::create_dir_all(&dir).unwrap();
             Self(dir)
         }

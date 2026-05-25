@@ -402,8 +402,8 @@
     };
   }
 
-  if (window.__bambuOverlayEnableTestHooks) {
-    window.__bambuOverlayTest = {
+  if (window.__machin3dOverlayEnableTestHooks) {
+    window.__machin3dOverlayTest = {
       state,
       render,
       renderConnectionBubble,

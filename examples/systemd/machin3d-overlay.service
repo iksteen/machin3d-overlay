@@ -1,0 +1,26 @@
+[Unit]
+Description=Bambu OBS overlay
+Documentation=https://github.com/iksteen/machin3d-overlay
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=machin3d-overlay
+Group=machin3d-overlay
+ExecStart=/usr/local/bin/machin3d-overlay serve --bind 0.0.0.0:8765 --bbl-token-file /var/lib/machin3d-overlay/token.json
+Restart=on-failure
+RestartSec=5s
+
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectHome=true
+ProtectSystem=strict
+
+# StateDirectory creates /var/lib/machin3d-overlay on supported systemd versions
+# and assigns it to User/Group. Keep ReadWritePaths aligned with --bbl-token-file.
+ReadWritePaths=/var/lib/machin3d-overlay
+StateDirectory=machin3d-overlay
+
+[Install]
+WantedBy=multi-user.target

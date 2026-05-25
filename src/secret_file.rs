@@ -2,7 +2,7 @@
 //!
 //! Both `bambu::auth` (Bambu Cloud token) and `snapmaker::auth`
 //! (Snapmaker mTLS pairing material) live as JSON under
-//! `$XDG_STATE_HOME/bambu-overlay/` and need the same durability +
+//! `$XDG_STATE_HOME/machin3d-overlay/` and need the same durability +
 //! permission story: write to a temp file under the same directory, sync
 //! to disk, rename into place atomically; clean up the temp file on any
 //! failure path; restrict permissions to the owning user on creation.
@@ -21,20 +21,20 @@ use uuid::Uuid;
 use std::os::unix::fs::OpenOptionsExt;
 
 /// Path to a per-app credential file under the user's XDG state
-/// directory: `$XDG_STATE_HOME/bambu-overlay/<file_name>`, falling back
-/// to `~/.local/state/bambu-overlay/<file_name>` (or the current
+/// directory: `$XDG_STATE_HOME/machin3d-overlay/<file_name>`, falling back
+/// to `~/.local/state/machin3d-overlay/<file_name>` (or the current
 /// directory if even `$HOME` is unset).
 pub(crate) fn state_path(file_name: &str) -> PathBuf {
     if let Ok(xdg_state_home) = env::var("XDG_STATE_HOME") {
         return PathBuf::from(xdg_state_home)
-            .join("bambu-overlay")
+            .join("machin3d-overlay")
             .join(file_name);
     }
     dirs::home_dir()
         .unwrap_or_else(|| PathBuf::from("."))
         .join(".local")
         .join("state")
-        .join("bambu-overlay")
+        .join("machin3d-overlay")
         .join(file_name)
 }
 

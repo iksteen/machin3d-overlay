@@ -219,7 +219,7 @@ fn download_3mf_to_temp_file(
 }
 
 fn temporary_archive_path() -> PathBuf {
-    env::temp_dir().join(format!("bambu-overlay-{}.3mf", Uuid::new_v4()))
+    env::temp_dir().join(format!("machin3d-overlay-{}.3mf", Uuid::new_v4()))
 }
 
 struct TempArchive {

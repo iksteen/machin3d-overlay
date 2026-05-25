@@ -1,10 +1,9 @@
-# bambu-overlay
+# machin3d-overlay
 
-Rust rewrite of the Bambu overlay prototype.
-
-The release build is a single deployable binary. HTML, CSS, and browser
-JavaScript are embedded at compile time with `include_str!`; no external static
-files are needed next to the binary.
+Self-hosted 3D printer overlay for OBS or any browser. Supports Bambu Lab
+printers (cloud or LAN MQTT) and the Snapmaker U1 (over Moonraker). Ships as a
+single static binary — HTML, CSS, and overlay JavaScript are embedded at
+compile time with `include_str!` and need no companion files at deploy time.
 
 ## Build
 
@@ -12,263 +11,302 @@ files are needed next to the binary.
 cargo build --release
 ```
 
-On Linux, the video TLS transport uses `native-tls`, which links against
-OpenSSL. Install the OpenSSL development package for your build target, for
-example `pkg-config` and `libssl-dev` on Debian/Ubuntu.
+On Linux, the printer-facing TLS transport uses `native-tls`, which links
+against OpenSSL. Install the OpenSSL development package for your build target,
+for example `pkg-config` and `libssl-dev` on Debian/Ubuntu.
 
 Deploy:
 
 ```sh
-target/release/bambu-overlay
+target/release/machin3d-overlay
 ```
 
-## Usage
-
-Log in once:
+## Quick start
 
 ```sh
-bambu-overlay login
+# Bambu printers: log in once, then serve.
+machin3d-overlay login
+machin3d-overlay serve
+
+# Snapmaker U1: pair once (tap Approve on the printer), then serve.
+machin3d-overlay snap-pair 192.168.1.60
+machin3d-overlay serve --snap-device 192.168.1.60
+
+# Mixed setup — both vendors at once.
+machin3d-overlay serve --snap-device 192.168.1.60
 ```
 
-Run the overlay server:
+`serve` works without any Bambu Cloud token if you only configure Snapmaker
+devices (or Bambu LAN devices with access codes provided on the CLI). The
+token file is loaded only when it exists and only when a Bambu code path needs
+it.
+
+## Overlay URLs and JSON API
+
+Open `http://127.0.0.1:8765/horizontal` for the horizontal overlay or
+`http://127.0.0.1:8765/vertical` for the vertical overlay. Both default to the
+first printer in the configured device list.
+
+Select a specific printer with a device-scoped path:
+`http://127.0.0.1:8765/devices/<DEVICE_ID>/horizontal` /
+`/devices/<DEVICE_ID>/vertical`. Device IDs come from each printer's stable
+identifier: a Bambu serial for Bambu printers, the Snapmaker `serial_number`
+field for the U1.
+
+List configured device IDs (vendor-neutral):
 
 ```sh
-bambu-overlay serve
+curl http://127.0.0.1:8765/api/devices
 ```
 
-Open `http://127.0.0.1:8765/` or `http://127.0.0.1:8765/horizontal`
-for the horizontal overlay, or `http://127.0.0.1:8765/vertical` for the
-vertical overlay.
+`/api/devices` includes name, online status, and device-specific overlay /
+thumbnail / video paths. It includes a video path only when the service has a
+validated explicit video endpoint, a successful local startup video probe, or
+(for Snapmaker) a reachable Moonraker camera endpoint. Access codes and mTLS
+keys are never included.
 
-When the token account has more than one printer, list the available device IDs:
+The browser uses server-sent events from `/api/current-print/events`. The
+server emits after MQTT/Moonraker reports and at least once per second. While
+serving, the overlay does not poll Bambu Cloud current-print APIs; it builds
+status from the configured device catalog plus live MQTT and Moonraker
+reports. Thumbnail refreshes are triggered by job-state changes.
+
+Fetch the active print thumbnail with `/devices/<DEVICE_ID>/thumbnail`. Bambu
+cloud devices resolve the current task through Bambu Cloud and cache the
+downloaded thumbnail. Bambu local devices download the active `.3mf` from the
+printer over LAN FTPS and cache the embedded thumbnail. Snapmaker devices
+download the thumbnail through Moonraker's HTTP file API.
+
+`machin3d-overlay serve --help` lists all runtime options. Per-vendor flags are
+namespaced: Bambu Lab uses `--bbl-…`, Snapmaker uses `--snap-…`.
+
+## Bambu Lab printers
+
+Log in once. The token, API base, and Bambu MQTT user ID are stored in the
+token file:
 
 ```sh
-bambu-overlay devices
+machin3d-overlay login
 ```
 
-Select a printer in the overlay with a device-specific path:
-`http://127.0.0.1:8765/devices/<DEVICE_ID>/horizontal` or
-`http://127.0.0.1:8765/devices/<DEVICE_ID>/vertical`. The default layout paths
-use the first printer from the configured device list.
+If you ever upgrade from a token created by 1.x, re-run `login` to populate
+the stored user ID. The token file defaults to a path under
+`$XDG_DATA_HOME`; override it with `--bbl-token-file PATH`.
 
-The browser uses server-sent events from `/api/current-print/events`. The server
-emits after MQTT messages and at least once per second. While serving, the
-overlay does not poll Bambu Cloud current-print APIs; it builds status from the
-configured device catalog plus MQTT reports. Thumbnail refreshes are triggered
-by MQTT task changes.
-
-The current device catalog is available as JSON at `/api/devices`. It includes
-known device metadata and device-specific layout and thumbnail paths. It
-includes a video path only when the service has a validated explicit video
-endpoint or a successful local startup video probe for that device. Access codes
-are never included in this response.
-
-Fetch the active print thumbnail with `/devices/<DEVICE_ID>/thumbnail`.
-Without a device path, `/thumbnail` uses the first printer from the
-configured device list.
-Cloud devices resolve the current task through Bambu Cloud and cache the
-downloaded thumbnail. Local devices download the active `.3mf` from the printer
-over LAN FTPS and cache the embedded thumbnail.
-
-Useful commands:
+List bound Bambu printers in the token account:
 
 ```sh
-bambu-overlay serve --bind 0.0.0.0:8765
-bambu-overlay serve --bbl-cloud-device 00M123456789012
-bambu-overlay serve --bbl-local-device 192.168.1.50,12345678,Office
-bambu-overlay serve --bbl-local-device 192.168.1.50
-bambu-overlay serve --bbl-local-device 192.168.1.50,12345678,Office --bbl-local-device 192.168.1.51,87654321,Garage
-bambu-overlay serve --bbl-video-device 192.168.1.50
-bambu-overlay serve --bbl-video-device 192.168.1.50 --bbl-video-device 192.168.1.51:6001
-bambu-overlay mqtt --device 00M123456789012
-bambu-overlay mqtt --bbl-local-device 192.168.1.50,12345678
+machin3d-overlay devices
 ```
 
-Configuration is handled with command-line options. Use `--help` on any command
-to see the available options. `login` stores the access token, API base, and
-Bambu MQTT user ID in the token file; re-run `login` if the token file predates
-the stored user ID. `serve` reads that token data in cloud mode and only exposes
-runtime settings such as `--bind`, `--bbl-token-file`, `--timeout`, `--bbl-cloud-mqtt`,
-`--bbl-local-device`, `--bbl-cloud-device`, and `--bbl-video-device`.
-`--bbl-local-device`, `--bbl-cloud-device`, and `--bbl-video-device` can be repeated.
-
-## MQTT monitoring
-
-Use `mqtt` to print raw MQTT report payloads for one printer:
+Serve. With nothing else specified, `serve` enumerates the account's bound
+printers via `/bind`:
 
 ```sh
-bambu-overlay mqtt
-bambu-overlay mqtt --device <DEVICE_ID>
-bambu-overlay mqtt --bbl-cloud-device <DEVICE_ID>
-bambu-overlay mqtt --bbl-local-device <HOST[:MQTT_PORT]>[,<ACCESS_CODE>[,<NAME>]]
+machin3d-overlay serve
+machin3d-overlay serve --bind 0.0.0.0:8765
 ```
 
-The command uses the same cloud enumeration and local-device resolution rules as
-`serve`. If no `--device` is provided, it monitors the first resolved device;
-in cloud enumeration mode that is the first device returned by `/bind`. Only the
-selected printer's `device/<DEVICE_ID>/report` payloads are written to stdout,
-one event per line.
-
-## Local devices
-
-To add printers directly over LAN MQTT, configure them with `--bbl-local-device`:
-
-```sh
-bambu-overlay serve --bbl-local-device <HOST[:MQTT_PORT]>[,<ACCESS_CODE>[,<NAME>]]
-```
-
-`HOST` is the printer LAN address, and `ACCESS_CODE` is the LAN access code shown
-on the printer. Startup connects to the printer's local MQTT TLS port and uses
-the device certificate common name as the device ID before MQTT authentication.
-The MQTT port defaults to `8883`. If `ACCESS_CODE` is omitted, startup looks up
-the matching Bambu Cloud `/bind` entry when a token is available. Otherwise
-startup fails. Use an empty field when omitting the code but setting a name, for
-example `--bbl-local-device <HOST>,,<NAME>`. Repeat
-`--bbl-local-device` for multiple printers.
+### Hybrid mode and explicit devices
 
 Hybrid mode is automatic. `serve` calls Bambu Cloud `/bind` only when it needs
 device data from it. If a token file exists and no `--bbl-cloud-device` or
-`--bbl-local-device` is provided, `/bind` is used as the cloud device catalog. If any
-`--bbl-cloud-device <DEVICE_ID>` entry is provided, that explicit list is the
-complete cloud device catalog and `/bind` is not used for enumeration.
-
-`--bbl-cloud-device` entries are id-only. Standalone cloud devices still require a
-Bambu Cloud token for the MQTT UID lookup and MQTT authentication. Local devices
-with complete access codes do not trigger `/bind`; local devices missing an
-access code and explicit cloud video devices without an access code look up
-`/bind` only when that code is actually needed.
-
-To run without any Bambu Cloud API calls, provide only `--bbl-local-device` entries
-that include access codes.
-
-Select a local printer the same way as cloud printers:
-`http://127.0.0.1:8765/devices/<DEVICE_ID>/horizontal`.
-
-## Snapmaker printers
-
-`bambu-overlay` also drives Snapmaker printers that run Moonraker (e.g. the
-Snapmaker U1). Add each printer with `--snap-device`:
+`--bbl-local-device` is provided, `/bind` is used as the cloud device catalog.
+If any `--bbl-cloud-device <DEVICE_ID>` entry is provided, that explicit list
+is the complete cloud catalog and `/bind` is not used for enumeration.
 
 ```sh
-bambu-overlay serve --snap-device <HOST[:PORT]>
+machin3d-overlay serve --bbl-cloud-device 00M123456789012
+machin3d-overlay serve --bbl-local-device 192.168.1.50,12345678,Office
+machin3d-overlay serve --bbl-local-device 192.168.1.50
+machin3d-overlay serve --bbl-local-device 192.168.1.50,12345678,Office \
+                    --bbl-local-device 192.168.1.51,87654321,Garage
+```
+
+`--bbl-cloud-device` entries are id-only. Standalone cloud devices still
+require a Bambu Cloud token for the MQTT UID lookup and MQTT authentication.
+
+`--bbl-local-device` accepts `HOST[:MQTT_PORT][,ACCESS_CODE[,NAME]]`. Startup
+connects to the printer's local MQTT TLS port (`8883` by default) and uses the
+device certificate's common name as the device ID before MQTT authentication.
+If `ACCESS_CODE` is omitted, startup looks up the matching Bambu Cloud `/bind`
+entry when a token is available; otherwise startup fails. Use an empty field
+when omitting the code but setting a name, e.g.
+`--bbl-local-device <HOST>,,<NAME>`.
+
+To run without any Bambu Cloud API calls, provide only `--bbl-local-device`
+entries that include access codes.
+
+### Bambu MQTT monitoring
+
+`mqtt` prints raw MQTT report payloads for one Bambu printer (one event per
+line, useful for debugging):
+
+```sh
+machin3d-overlay mqtt
+machin3d-overlay mqtt --device <DEVICE_ID>
+machin3d-overlay mqtt --bbl-cloud-device <DEVICE_ID>
+machin3d-overlay mqtt --bbl-local-device <HOST[:MQTT_PORT]>[,<ACCESS_CODE>[,<NAME>]]
+```
+
+Same cloud enumeration and local resolution rules as `serve`. If no
+`--device` is provided, it monitors the first resolved device. Only the
+selected printer's `device/<DEVICE_ID>/report` payloads are written.
+
+## Snapmaker U1
+
+The U1 (and any other Moonraker-driven Snapmaker printer) is configured per
+device with `--snap-device`:
+
+```sh
+machin3d-overlay serve --snap-device 192.168.1.60
+machin3d-overlay serve --snap-device 192.168.1.60 --snap-device 192.168.1.61:80
 ```
 
 `HOST` is the printer's LAN address; `PORT` defaults to `80` (Moonraker proxied
 through nginx). Startup probes `http://HOST:PORT/machine/system_info` to learn
-the printer's serial number (used as the device id) and its friendly name.
-Repeat `--snap-device` for multiple printers. Each entry spawns a Moonraker
-WebSocket worker that subscribes to `print_stats`, `display_status`,
-`extruder[0..3]`, `heater_bed`, `virtual_sdcard`, and `print_task_config`, and
-feeds the shared overlay state.
+the printer's serial number (used as the device ID) and friendly name. Each
+entry then spawns a Moonraker WebSocket worker that subscribes to
+`print_stats`, `display_status`, `extruder[0..3]`, `heater_bed`, `fan`,
+`virtual_sdcard`, `print_task_config`, `gcode_move`, and `toolhead` and feeds
+the shared overlay state.
 
 State, thumbnails, and the camera stream are all wired up. Bambu Cloud is not
 required for Snapmaker — `serve` works without a token file when only
 `--snap-device` is configured.
 
-### Camera
+### Pairing for reliable camera wake-up
 
-The U1's camera only writes fresh frames to `monitor.jpg` while its camera
-daemon is in "monitor" mode. To wake it reliably the overlay drives the
-same bespoke mTLS MQTT control plane Snapmaker Orca uses. Pair once:
+The U1's on-device camera daemon only writes fresh frames to `monitor.jpg`
+while it is in "monitor" mode; by default the file is frozen on the last
+captured frame. To wake the daemon on demand, the overlay drives the same
+bespoke mTLS MQTT control plane Snapmaker Orca uses. Pair once:
 
 ```sh
 # On the printer: switch to LAN mode (Settings → Network) so the approval popup can appear.
-bambu-overlay snap-pair <HOST>          # tap "Approve" on the printer screen
+machin3d-overlay snap-pair 192.168.1.60          # tap "Approve" on the printer screen
 # You can switch the printer back to cloud mode now — the issued cert keeps working.
-bambu-overlay serve --snap-device <HOST> # HOST must match the snap-pair value
+machin3d-overlay serve --snap-device 192.168.1.60   # HOST must match the snap-pair value
 ```
 
 `snap-pair` runs the LAN bootstrap on the printer's cleartext MQTT broker
 (`:1884`), prints a "tap Approve" prompt, and on approval writes the
-printer-issued client cert/key/CA, SN, and stable client ID to
-`$XDG_STATE_HOME/bambu-overlay/snap-tokens.json` (mode `0600`). `serve`
-loads the token and uses the cert/key/CA to publish `camera.start_monitor`
-/ `camera.stop_monitor` on the printer's mTLS broker (`:8883`). Reusing
-the same client ID across `snap-pair` runs keeps the printer's auth DB
-warm so subsequent pairings (e.g. after rotating tokens) do not require a
-second tap.
+printer-issued client cert/key/CA, SN, and stable client ID to a JSON file
+(default: `$XDG_STATE_HOME/machin3d-overlay/snap-tokens.json`, mode `0600`).
+Override the location with `--snap-token-file PATH` on both `snap-pair` and
+`serve` if you want a non-default path (the two commands must agree).
 
-**LAN mode is only required for the initial pairing** (to expose the
-approval popup). Once you have a token on disk, the printer can be in
-cloud mode for normal operation and the overlay's mTLS connection still
-works.
+`serve` loads the snap-tokens file at startup and uses each token's cert/key/CA
+to open a long-lived mTLS session that publishes `camera.start_monitor` and
+`camera.stop_monitor` on the printer's mTLS broker (`:8883`). Reusing the same
+client ID across `snap-pair` runs keeps the printer's auth DB warm so
+subsequent pairings (e.g. after rotating tokens) do not require a second tap.
 
-Without `snap-pair`, the overlay still serves `/devices/<id>/video.mjpeg`
-but does not attempt to wake the camera daemon. Frames will only update
-while something else (a print job, Orca's camera viewer) is keeping the
-daemon active; otherwise you'll get the last-captured frame, frozen.
+**LAN mode is only required for the initial pairing**, to expose the approval
+popup. Once you have a token on disk, the printer can be in cloud mode for
+normal operation and the overlay's mTLS connection still works.
 
-## Video
+Without `snap-pair`, the overlay still serves `/devices/<id>/video.mjpeg` but
+does not attempt to wake the camera daemon. Frames will only update while
+something else (a print job, Orca's camera viewer) keeps the daemon active;
+otherwise you'll get the last-captured frame, frozen.
 
-A1 and P1 series printers can expose their camera as MJPEG at `/video.mjpeg`:
+## Camera streaming
+
+The video transport is per-vendor; the served endpoint is identical for both.
+Select a camera with `/devices/<DEVICE_ID>/video.mjpeg`. Without a device
+path, `/video.mjpeg` uses the first printer from the configured device list.
+Only one upstream video connection per printer is open at a time — multiple
+OBS or browser clients connected to the same per-device endpoint share that
+connection, and the upstream closes after the last client disconnects.
+
+### Bambu A1 and P1 series
+
+A1 and P1 series printers expose their camera as raw JPEG frames over an
+authenticated TLS socket:
 
 ```sh
-bambu-overlay serve --bbl-video-device 192.168.1.50
+machin3d-overlay serve --bbl-video-device 192.168.1.50
+machin3d-overlay serve --bbl-video-device 192.168.1.50:6000,12345678
 ```
 
-`--bbl-video-device` accepts a printer LAN IP address or hostname, optionally
-followed by `:PORT` and `,ACCESS_CODE`, for example
-`--bbl-video-device 192.168.1.50:6000,12345678`. Repeat it once per printer when
-serving multiple cameras. The printer video server uses port `6000` when no port
-is specified. `serve` probes each explicit
-`--bbl-video-device` endpoint at startup, reads the device ID from the printer
-certificate common name, and fails if that device is not present in the known
-device catalog. Known devices include cloud `/bind` devices when enumeration is
-active, plus explicit `--bbl-cloud-device` and `--bbl-local-device` options. For cloud
-devices, `--bbl-video-device` provides the LAN camera endpoint and the access code
-can be provided on `--bbl-video-device` or come from `/bind` metadata. For local
-devices, the access code comes from the matching `--bbl-local-device` entry or
+`--bbl-video-device` accepts a printer LAN IP or hostname, optionally followed
+by `:PORT` and `,ACCESS_CODE`. The printer video server uses port `6000` when
+no port is specified. Repeat the flag once per printer when serving multiple
+cameras.
+
+`serve` probes each explicit `--bbl-video-device` endpoint at startup, reads
+the device ID from the printer certificate's common name, and fails if that
+device is not present in the known device catalog. Known devices include cloud
+`/bind` devices when enumeration is active, plus explicit `--bbl-cloud-device`
+and `--bbl-local-device` options. For cloud devices, `--bbl-video-device`
+provides the LAN camera endpoint and the access code can be provided on
+`--bbl-video-device` or come from `/bind` metadata. For local devices, the
+access code comes from the matching `--bbl-local-device` entry or
 `--bbl-video-device` entry.
 
-For local devices, `serve` probes `<HOST>:6000` at startup. If it can complete a
-Bambu device TLS handshake and the printer certificate common name matches the
-local device ID, that endpoint is added automatically. No camera access code is
-sent during startup video probes. `--bbl-video-device` remains useful for cloud
-devices and for overriding or adding camera endpoints explicitly.
+For local devices, `serve` also probes `<HOST>:6000` at startup. If it can
+complete a Bambu device TLS handshake and the printer certificate common name
+matches the local device ID, that endpoint is added automatically. No camera
+access code is sent during startup probes. `--bbl-video-device` remains useful
+for cloud devices and for overriding or adding camera endpoints explicitly.
 
-Select a camera with `/devices/<DEVICE_ID>/video.mjpeg`. Without a device path,
-`/video.mjpeg` uses the first printer from the configured device list. For each
-selected device, `bambu-overlay` tries the configured video
-endpoints with that device ID as TLS SNI. The printer certificate common name is
-the device serial number, so `bambu-overlay` uses the certificate to reject
-mismatched endpoints before sending the camera access code. It also remembers
-mismatched endpoint/device pairs it discovers while probing, then remembers the
-endpoint that successfully streams frames for the rest of the process.
+For each selected device, `machin3d-overlay` tries the configured endpoints with
+that device ID as TLS SNI. The printer certificate common name is the device
+serial number, so `machin3d-overlay` uses the certificate to reject mismatched
+endpoints before sending the camera access code. It remembers mismatched
+endpoint/device pairs it discovers while probing, then remembers the endpoint
+that successfully streams frames for the rest of the process.
 
-The video connection uses `native-tls` with only Bambu's BBL CA certificate
-trusted for this transport. The TLS backend verifies the certificate chain,
-certificate validity, signatures, and handshake. Hostname verification is
-disabled because some printer firmware serves CN-only certificates; after the
-TLS handshake, `bambu-overlay` checks that the certificate common name matches
-the requested device ID before sending the camera access code.
+The Bambu video connection uses `native-tls` with only Bambu's BBL CA
+certificate trusted for this transport. The TLS backend verifies the
+certificate chain, certificate validity, signatures, and handshake. Hostname
+verification is disabled because some printer firmware serves CN-only
+certificates; after the TLS handshake, `machin3d-overlay` checks that the
+certificate common name matches the requested device ID before sending the
+camera access code.
 
-Only one upstream video connection to the printer is opened. Multiple OBS or
-browser clients connected to the same `/devices/<DEVICE_ID>/video.mjpeg`
-stream share that connection, and the printer connection is closed after the
-last MJPEG client disconnects.
+### Snapmaker U1
+
+The U1 streams JPEGs through Moonraker's HTTP camera proxy. There is no
+explicit `--snap-video-device`: configuring `--snap-device <HOST>` is
+sufficient. Frame freshness depends on whether you have paired the printer
+(see [Pairing for reliable camera wake-up](#pairing-for-reliable-camera-wake-up)
+above).
 
 ## systemd
 
-An example service unit is available at
-`examples/systemd/bambu-overlay.service`. Adjust the `User`, `Group`,
-`ExecStart`, and token file path for your host before installing it.
+An example service unit is at `examples/systemd/machin3d-overlay.service`. Adjust
+the `User`, `Group`, `ExecStart`, and token file path for your host before
+installing it.
 
-The example stores the token at `/var/lib/bambu-overlay/token.json` and runs as
-the unprivileged `bambu-overlay` user. On systemd versions that support
-`StateDirectory=`, systemd creates `/var/lib/bambu-overlay` with the correct
-owner when the service starts.
+The example stores the Bambu token at `/var/lib/machin3d-overlay/token.json` and
+runs as the unprivileged `machin3d-overlay` user. On systemd versions that
+support `StateDirectory=`, systemd creates `/var/lib/machin3d-overlay` with the
+correct owner when the service starts.
 
-If you create the service user and state directory manually, keep the directory
-private and writable only by that service account:
-
-```sh
-sudo useradd --system --home-dir /var/lib/bambu-overlay --shell /usr/sbin/nologin bambu-overlay
-sudo install -d -o bambu-overlay -g bambu-overlay -m 0700 /var/lib/bambu-overlay
-```
-
-Create the token as that user so the resulting file is owned correctly:
+If you create the service user and state directory manually, keep the
+directory private and writable only by that service account:
 
 ```sh
-sudo -u bambu-overlay /usr/local/bin/bambu-overlay login --bbl-token-file /var/lib/bambu-overlay/token.json
-sudo chmod 0600 /var/lib/bambu-overlay/token.json
+sudo useradd --system --home-dir /var/lib/machin3d-overlay --shell /usr/sbin/nologin machin3d-overlay
+sudo install -d -o machin3d-overlay -g machin3d-overlay -m 0700 /var/lib/machin3d-overlay
 ```
+
+Create the Bambu token as that user so the resulting file is owned correctly:
+
+```sh
+sudo -u machin3d-overlay /usr/local/bin/machin3d-overlay login --bbl-token-file /var/lib/machin3d-overlay/token.json
+sudo chmod 0600 /var/lib/machin3d-overlay/token.json
+```
+
+For Snapmaker, run `snap-pair` as the service user too so the resulting
+snap-tokens file is owned correctly:
+
+```sh
+sudo -u machin3d-overlay /usr/local/bin/machin3d-overlay snap-pair \
+    --snap-token-file /var/lib/machin3d-overlay/snap-tokens.json 192.168.1.60
+```
+
+Point `serve` at the matching path with `--snap-token-file
+/var/lib/machin3d-overlay/snap-tokens.json`.

@@ -95,7 +95,7 @@ fn cloud_mqtt_options(
         format!("u_{user_id}")
     };
     let mut options = MqttOptions::new(
-        format!("bambu-overlay-{}", Uuid::new_v4()),
+        format!("machin3d-overlay-{}", Uuid::new_v4()),
         endpoint.host.as_str(),
         endpoint.port,
     );
@@ -107,7 +107,7 @@ fn cloud_mqtt_options(
 
 fn local_mqtt_options(device: &BambuLocalDevice) -> Result<MqttOptions> {
     let mut options = MqttOptions::new(
-        format!("bambu-overlay-{}", Uuid::new_v4()),
+        format!("machin3d-overlay-{}", Uuid::new_v4()),
         device.endpoint.host(),
         device.endpoint.port(),
     );

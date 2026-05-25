@@ -1,6 +1,6 @@
 use serde::Deserialize;
 
-use bambu_overlay::bambu::{DeviceListResponse, PrinterStatus, TasksResponse, UserPreference};
+use machin3d_overlay::bambu::{DeviceListResponse, PrinterStatus, TasksResponse, UserPreference};
 
 #[test]
 fn bind_fixture_uses_observed_device_fields() {

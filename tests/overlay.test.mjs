@@ -132,7 +132,7 @@ function loadOverlay({
     requestAnimationFrame: (callback) => callback(),
     setTimeout,
     window: {
-      __bambuOverlayEnableTestHooks: true,
+      __machin3dOverlayEnableTestHooks: true,
       clearTimeout,
       EventSource: FakeEventSource,
       location: { search: "" },
@@ -143,7 +143,7 @@ function loadOverlay({
   context.window.document = document;
 
   vm.runInNewContext(overlayScript, context);
-  return { ...context.window.__bambuOverlayTest, revokedUrls };
+  return { ...context.window.__machin3dOverlayTest, revokedUrls };
 }
 
 test("renderThumb clears an existing thumbnail when the next status is missing", () => {

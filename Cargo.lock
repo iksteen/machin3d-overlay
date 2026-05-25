@@ -208,41 +208,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "bambu-overlay"
-version = "2.0.0"
-dependencies = [
- "anyhow",
- "async-stream",
- "axum",
- "bytes",
- "chrono",
- "clap",
- "dirs",
- "futures-core",
- "futures-util",
- "minijinja",
- "native-tls",
- "quick-xml",
- "reqwest",
- "rpassword",
- "rsa",
- "rumqttc",
- "serde",
- "serde_json",
- "suppaftp",
- "tokio",
- "tokio-native-tls",
- "tokio-tungstenite",
- "tower",
- "tracing",
- "tracing-subscriber",
- "url",
- "uuid",
- "x509-parser",
- "zip",
-]
-
-[[package]]
 name = "base64"
 version = "0.22.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1058,6 +1023,41 @@ name = "log"
 version = "0.4.29"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "5e5032e24019045c762d3c0f28f5b6b8bbf38563a65908389bf7978758920897"
+
+[[package]]
+name = "machin3d-overlay"
+version = "2.0.0"
+dependencies = [
+ "anyhow",
+ "async-stream",
+ "axum",
+ "bytes",
+ "chrono",
+ "clap",
+ "dirs",
+ "futures-core",
+ "futures-util",
+ "minijinja",
+ "native-tls",
+ "quick-xml",
+ "reqwest",
+ "rpassword",
+ "rsa",
+ "rumqttc",
+ "serde",
+ "serde_json",
+ "suppaftp",
+ "tokio",
+ "tokio-native-tls",
+ "tokio-tungstenite",
+ "tower",
+ "tracing",
+ "tracing-subscriber",
+ "url",
+ "uuid",
+ "x509-parser",
+ "zip",
+]
 
 [[package]]
 name = "matchers"
