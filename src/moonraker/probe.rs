@@ -1,4 +1,4 @@
-//! Inspect a Snapmaker printer's `machine/system_info` to learn its stable
+//! Inspect a Moonraker printer's `machine/system_info` to learn its stable
 //! identity (serial number) and friendly name before the runtime registry
 //! freezes. Mirrors the role of `infer_local_device_id` for Bambu local
 //! printers: a startup-time round trip that turns a user-supplied LAN
@@ -9,17 +9,17 @@ use std::time::Duration;
 use anyhow::{Context, Result};
 use serde::Deserialize;
 
-use super::SnapmakerEndpoint;
+use super::MoonrakerEndpoint;
 
 const PROBE_TIMEOUT: Duration = Duration::from_secs(5);
 
 #[derive(Debug, Clone)]
-pub(crate) struct SnapmakerSystemInfo {
+pub(crate) struct MoonrakerSystemInfo {
     pub(crate) serial: String,
     pub(crate) name: Option<String>,
 }
 
-pub(crate) async fn probe_system_info(endpoint: &SnapmakerEndpoint) -> Result<SnapmakerSystemInfo> {
+pub(crate) async fn probe_system_info(endpoint: &MoonrakerEndpoint) -> Result<MoonrakerSystemInfo> {
     let url = format!(
         "http://{host}:{port}/machine/system_info",
         host = endpoint.host,
@@ -28,7 +28,7 @@ pub(crate) async fn probe_system_info(endpoint: &SnapmakerEndpoint) -> Result<Sn
     let client = reqwest::Client::builder()
         .timeout(PROBE_TIMEOUT)
         .build()
-        .context("failed to build Snapmaker HTTP client")?;
+        .context("failed to build Moonraker HTTP client")?;
     let response = client
         .get(&url)
         .send()
@@ -53,7 +53,7 @@ pub(crate) async fn probe_system_info(endpoint: &SnapmakerEndpoint) -> Result<Sn
         .or(product.machine_type)
         .map(|name| name.trim().to_owned())
         .filter(|name| !name.is_empty());
-    Ok(SnapmakerSystemInfo { serial, name })
+    Ok(MoonrakerSystemInfo { serial, name })
 }
 
 #[derive(Deserialize)]

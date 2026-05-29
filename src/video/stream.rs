@@ -133,8 +133,8 @@ impl VideoStreams {
             tokio::select! {
                 _ = shutdown.cancelled() => {
                     // Workers subscribe to the same shutdown via `state.shutdown`
-                    // and exit cooperatively (e.g. the Snapmaker worker uses
-                    // the window to send `camera.stop_monitor`). The parent
+                    // and exit cooperatively (e.g. the Moonraker worker uses
+                    // the window to send the U1 `camera.stop_monitor`). The parent
                     // `ServiceTasks` grace period will abort us if we exceed
                     // it.
                     while let Some(result) = workers.join_next().await {

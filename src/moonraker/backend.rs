@@ -1,4 +1,4 @@
-//! One Moonraker worker per Snapmaker device. Each worker maintains a
+//! One worker per Moonraker device. Each worker maintains a
 //! WebSocket session, decodes `notify_status_update` events into a
 //! `PrinterReport`, and publishes into the shared `LiveStateStore`. Workers
 //! reconnect with exponential backoff on transport errors.
@@ -14,7 +14,7 @@ use crate::{
     service::{ServiceTasks, Shutdown, ShutdownReceiver},
 };
 
-use super::{moonraker::MoonrakerSession, report::to_live, SnapmakerEndpoint};
+use super::{client::MoonrakerSession, report::to_live, MoonrakerEndpoint};
 
 const RETRY_INITIAL: Duration = Duration::from_secs(2);
 const RETRY_MAX: Duration = Duration::from_secs(30);
@@ -25,12 +25,12 @@ pub(crate) fn spawn(
     tasks: &mut ServiceTasks,
     shutdown: &Shutdown,
 ) {
-    for (entry, snap) in registry.snapmaker_entries() {
+    for (entry, snap) in registry.moonraker_entries() {
         let device_id = entry.id().to_owned();
         let endpoint = snap.endpoint.clone();
         let live = live.clone();
-        let connection_key = format!("snap-{device_id}");
-        let task_name = format!("snapmaker Moonraker ({device_id})");
+        let connection_key = format!("moonraker-{device_id}");
+        let task_name = format!("Moonraker ({device_id})");
         tasks.spawn_with_shutdown(shutdown, task_name, move |shutdown| {
             run_device(device_id, endpoint, live, connection_key, shutdown)
         });
@@ -39,7 +39,7 @@ pub(crate) fn spawn(
 
 async fn run_device(
     device_id: String,
-    endpoint: SnapmakerEndpoint,
+    endpoint: MoonrakerEndpoint,
     live: LiveStateStore,
     connection_key: String,
     mut shutdown: ShutdownReceiver,
@@ -72,7 +72,7 @@ async fn run_device(
             }
             SessionResult::Failed(error) => {
                 let message = format!("{error:#}");
-                warn!(device_id = %device_id, error = %message, "Snapmaker session failed");
+                warn!(device_id = %device_id, error = %message, "Moonraker session failed");
                 live.set_device_connection(
                     &device_id,
                     DeviceConnection {
@@ -99,7 +99,7 @@ enum SessionResult {
 
 async fn attempt_session(
     device_id: &str,
-    endpoint: &SnapmakerEndpoint,
+    endpoint: &MoonrakerEndpoint,
     live: &LiveStateStore,
     connection_key: &str,
     shutdown: &mut ShutdownReceiver,

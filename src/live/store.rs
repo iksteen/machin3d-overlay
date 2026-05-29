@@ -1,6 +1,6 @@
 //! Per-device live-state store shared by every backend.
 //!
-//! Each backend (Bambu MQTT today, Snapmaker Moonraker next) translates its
+//! Each backend (Bambu MQTT and Moonraker) translates its
 //! wire protocol into vendor-neutral [`PrinterReport`] + [`DeviceConnection`]
 //! and publishes via [`LiveStateStore::publish_report`] or
 //! [`LiveStateStore::set_device_connection`]. The summary/web layer reads via

@@ -3,8 +3,8 @@ mod bambu_cloud;
 mod bambu_local;
 mod job_state;
 mod jobs;
+mod moonraker;
 mod service;
-mod snapmaker;
 
 use std::io::Read;
 

@@ -14,19 +14,19 @@ use tokio_native_tls::TlsConnector;
 use crate::{
     bambu::device_tls,
     devices::{DeviceCapabilities, DeviceEntry},
+    moonraker::{MoonrakerEndpoint, SnapMqttCreds},
     secret::Secret,
     service::ShutdownReceiver,
-    snapmaker::{SnapMqttCreds, SnapmakerEndpoint},
 };
 
 use super::{
-    connection::run_stream_worker, endpoint::VideoEndpoint, snapmaker::run_snapmaker_stream_worker,
+    connection::run_stream_worker, endpoint::VideoEndpoint, moonraker::run_moonraker_stream_worker,
     stream::DeviceVideoStream,
 };
 
 pub(crate) enum VideoSource {
     Bambu(BambuVideoSource),
-    Snapmaker(SnapmakerVideoSource),
+    Moonraker(MoonrakerVideoSource),
 }
 
 pub(crate) struct BambuVideoSource {
@@ -37,9 +37,9 @@ pub(crate) struct BambuVideoSource {
     pub(crate) remembered: Mutex<Option<VideoEndpoint>>,
 }
 
-pub(crate) struct SnapmakerVideoSource {
+pub(crate) struct MoonrakerVideoSource {
     pub(crate) device_id: String,
-    pub(crate) endpoint: SnapmakerEndpoint,
+    pub(crate) endpoint: MoonrakerEndpoint,
     pub(crate) mtls: Option<SnapMqttCreds>,
 }
 
@@ -47,7 +47,7 @@ impl VideoSource {
     pub(super) fn device_id(&self) -> &str {
         match self {
             VideoSource::Bambu(source) => &source.device_id,
-            VideoSource::Snapmaker(source) => &source.device_id,
+            VideoSource::Moonraker(source) => &source.device_id,
         }
     }
 
@@ -58,8 +58,8 @@ impl VideoSource {
     ) {
         match &*self {
             VideoSource::Bambu(source) => run_stream_worker(source, stream, shutdown).await,
-            VideoSource::Snapmaker(source) => {
-                run_snapmaker_stream_worker(source, stream, shutdown).await
+            VideoSource::Moonraker(source) => {
+                run_moonraker_stream_worker(source, stream, shutdown).await
             }
         }
     }
@@ -88,7 +88,7 @@ pub(crate) fn video_source_for(
                 remembered: Mutex::new(None),
             }))
         }
-        DeviceCapabilities::Snapmaker(snap) => Some(VideoSource::Snapmaker(SnapmakerVideoSource {
+        DeviceCapabilities::Moonraker(snap) => Some(VideoSource::Moonraker(MoonrakerVideoSource {
             device_id: entry.id().to_owned(),
             endpoint: snap.endpoint.clone(),
             mtls: snap.mtls.clone(),
@@ -98,7 +98,7 @@ pub(crate) fn video_source_for(
 
 /// Collect a `(device_id → VideoSource)` map from the registry. The Bambu
 /// endpoint catalog is supplied separately because it is built from
-/// `--bbl-video-device` flags plus startup probes; Snapmaker derives its URL
+/// `--bbl-video-device` flags plus startup probes; Moonraker derives its URL
 /// from the Moonraker endpoint already on the registry entry.
 pub(crate) fn collect_sources(
     registry: &crate::devices::DeviceRegistry,

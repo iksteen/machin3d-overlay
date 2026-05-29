@@ -9,9 +9,9 @@ use crate::{
         cloud::{bound_cloud_devices, explicit_cloud_devices, CloudSession},
         local::{infer_local_device_id, BambuLocalDevice, BambuLocalEndpointConfig},
     },
-    snapmaker::{
-        load_snap_tokens, probe_system_info, SnapMqttCreds, SnapToken, SnapmakerDevice,
-        SnapmakerDeviceConfig,
+    moonraker::{
+        load_snap_tokens, probe_system_info, MoonrakerDevice, MoonrakerDeviceConfig, SnapMqttCreds,
+        SnapToken,
     },
     video::VideoEndpoint,
 };
@@ -30,7 +30,7 @@ pub(crate) async fn resolve_devices(
     cloud_configs: &[String],
     local_configs: &[BambuLocalEndpointConfig],
     video_endpoints: &[VideoEndpoint],
-    snapmaker_configs: &[SnapmakerDeviceConfig],
+    moonraker_configs: &[MoonrakerDeviceConfig],
     snap_token_file: Option<&Path>,
 ) -> Result<DeviceRegistry> {
     ensure_unique_cloud_configs(cloud_configs)?;
@@ -39,7 +39,7 @@ pub(crate) async fn resolve_devices(
         cloud.is_some(),
         cloud_configs,
         local_configs,
-        snapmaker_configs,
+        moonraker_configs,
     );
     let cloud_devices = if enumerate_cloud_catalog {
         bound_cloud_devices(cloud).await?
@@ -52,9 +52,9 @@ pub(crate) async fn resolve_devices(
     );
     let local = resolve_local_devices(local_configs, &explicit_video, &mut bind_catalog).await?;
     let snap_tokens = load_snap_token_catalog(snap_token_file)?;
-    let snapmaker_devices = resolve_snapmaker_devices(snapmaker_configs, &snap_tokens).await?;
+    let moonraker_devices = resolve_moonraker_devices(moonraker_configs, &snap_tokens).await?;
 
-    let mut builder = DeviceRegistryBuilder::new(cloud_devices, local, snapmaker_devices);
+    let mut builder = DeviceRegistryBuilder::new(cloud_devices, local, moonraker_devices);
     explicit_video
         .attach(&mut builder, &mut bind_catalog)
         .await?;
@@ -91,10 +91,10 @@ fn snap_creds_from_token(serial: &str, token: SnapToken) -> SnapMqttCreds {
     token.into()
 }
 
-async fn resolve_snapmaker_devices(
-    configs: &[SnapmakerDeviceConfig],
+async fn resolve_moonraker_devices(
+    configs: &[MoonrakerDeviceConfig],
     snap_tokens: &[SnapToken],
-) -> Result<Vec<SnapmakerDevice>> {
+) -> Result<Vec<MoonrakerDevice>> {
     let semaphore = Arc::new(Semaphore::new(STARTUP_PROBE_CONCURRENCY));
     let mut probes = JoinSet::new();
     for (index, config) in configs.iter().cloned().enumerate() {
@@ -104,17 +104,17 @@ async fn resolve_snapmaker_devices(
             let _permit = semaphore
                 .acquire_owned()
                 .await
-                .context("Snapmaker probe concurrency limiter closed")?;
+                .context("Moonraker probe concurrency limiter closed")?;
             let info = probe_system_info(&config.endpoint).await.with_context(|| {
                 format!(
-                    "could not discover Snapmaker serial for --snap-device `{}`",
+                    "could not discover Moonraker serial for --snap-device `{}`",
                     config.endpoint
                 )
             })?;
             let mtls = matched_token.map(|token| snap_creds_from_token(&info.serial, token));
             Ok::<_, anyhow::Error>((
                 index,
-                SnapmakerDevice {
+                MoonrakerDevice {
                     serial: info.serial,
                     endpoint: config.endpoint,
                     name: info.name,
@@ -124,14 +124,14 @@ async fn resolve_snapmaker_devices(
         });
     }
 
-    let mut discovered: Vec<Option<SnapmakerDevice>> = (0..configs.len()).map(|_| None).collect();
+    let mut discovered: Vec<Option<MoonrakerDevice>> = (0..configs.len()).map(|_| None).collect();
     while let Some(result) = probes.join_next().await {
-        let (index, device) = result.context("Snapmaker probe task failed")??;
+        let (index, device) = result.context("Moonraker probe task failed")??;
         info!(
             device_id = %device.serial,
             endpoint = %device.endpoint,
             paired = device.mtls.is_some(),
-            "discovered Snapmaker device"
+            "discovered Moonraker device"
         );
         discovered[index] = Some(device);
     }
@@ -238,12 +238,12 @@ fn should_enumerate_cloud_catalog(
     cloud_available: bool,
     cloud_configs: &[String],
     local_configs: &[BambuLocalEndpointConfig],
-    snapmaker_configs: &[SnapmakerDeviceConfig],
+    moonraker_configs: &[MoonrakerDeviceConfig],
 ) -> bool {
     cloud_available
         && cloud_configs.is_empty()
         && local_configs.is_empty()
-        && snapmaker_configs.is_empty()
+        && moonraker_configs.is_empty()
 }
 
 fn finalize_local_device(

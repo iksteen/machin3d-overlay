@@ -1,6 +1,6 @@
 //! Vendor-neutral live-state model.
 //!
-//! Every backend (Bambu MQTT today, Snapmaker/Moonraker next) publishes the
+//! Every backend (Bambu MQTT and Moonraker) publishes the
 //! same shape: a [`PrinterReport`] of the printer's current task plus a
 //! [`DeviceConnection`] describing whether we're hearing from it. The device
 //! summary layer and the web payload only ever see these types — they never

@@ -2,7 +2,7 @@ use std::{collections::HashMap, time::Instant};
 
 use crate::{
     bambu::{mqtt::MqttDeviceState, PrinterStatus},
-    snapmaker::SnapmakerEndpoint,
+    moonraker::MoonrakerEndpoint,
 };
 
 use super::{trimmed, ThumbnailStatus};
@@ -11,7 +11,7 @@ use super::{trimmed, ThumbnailStatus};
 /// same `TaskKey` are about the same print job; jobs with different keys are
 /// for distinct prints. The shape of the key is per-vendor — Bambu folds
 /// together task id, filename, task name, start time, and print type while
-/// Snapmaker only has a filename to key by — but the cache only cares about
+/// Moonraker only has a filename to key by — but the cache only cares about
 /// equality, not parsing.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) struct TaskKey(String);
@@ -24,9 +24,9 @@ impl TaskKey {
             .flatten()
     }
 
-    pub(super) fn from_snapmaker_filename(filename: &str) -> Option<Self> {
+    pub(super) fn from_moonraker_filename(filename: &str) -> Option<Self> {
         let filename = trimmed(Some(filename))?;
-        Some(Self(format!("snapmaker\u{0}{filename}")))
+        Some(Self(format!("moonraker\u{0}{filename}")))
     }
 
     #[cfg(test)]
@@ -57,8 +57,8 @@ impl TaskKey {
 #[derive(Clone, Debug)]
 pub(super) enum FetchContext {
     Bambu(Box<PrinterStatus>),
-    Snapmaker {
-        endpoint: SnapmakerEndpoint,
+    Moonraker {
+        endpoint: MoonrakerEndpoint,
         filename: String,
     },
 }
@@ -524,15 +524,15 @@ mod tests {
     }
 
     #[test]
-    fn snapmaker_task_key_uses_filename() {
-        assert_eq!(TaskKey::from_snapmaker_filename("   "), None);
+    fn moonraker_task_key_uses_filename() {
+        assert_eq!(TaskKey::from_moonraker_filename("   "), None);
         assert_ne!(
-            TaskKey::from_snapmaker_filename("Cube.gcode"),
-            TaskKey::from_snapmaker_filename("Sphere.gcode")
+            TaskKey::from_moonraker_filename("Cube.gcode"),
+            TaskKey::from_moonraker_filename("Sphere.gcode")
         );
         assert_eq!(
-            TaskKey::from_snapmaker_filename("Cube.gcode"),
-            TaskKey::from_snapmaker_filename(" Cube.gcode ")
+            TaskKey::from_moonraker_filename("Cube.gcode"),
+            TaskKey::from_moonraker_filename(" Cube.gcode ")
         );
     }
 

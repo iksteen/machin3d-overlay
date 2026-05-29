@@ -1,4 +1,4 @@
-//! Snapmaker / Moonraker thumbnail fetcher.
+//! Moonraker thumbnail fetcher.
 //!
 //! Moonraker exposes each uploaded gcode's embedded thumbnails via the
 //! `server/files/metadata` JSON, which lists `relative_path` entries served
@@ -12,7 +12,7 @@ use bytes::Bytes;
 use serde::Deserialize;
 use url::Url;
 
-use crate::snapmaker::SnapmakerEndpoint;
+use crate::moonraker::MoonrakerEndpoint;
 
 use super::{image_content_type, ThumbnailImage, ThumbnailStatus, MAX_THUMBNAIL_SIZE};
 
@@ -20,14 +20,14 @@ const METADATA_TIMEOUT: Duration = Duration::from_secs(8);
 const DOWNLOAD_TIMEOUT: Duration = Duration::from_secs(15);
 
 pub(super) async fn fetch_thumbnail(
-    endpoint: &SnapmakerEndpoint,
+    endpoint: &MoonrakerEndpoint,
     filename: &str,
 ) -> Result<ThumbnailStatus> {
     let metadata_url = metadata_url(endpoint, filename)?;
     let client = reqwest::Client::builder()
         .timeout(METADATA_TIMEOUT)
         .build()
-        .context("failed to build Snapmaker thumbnail HTTP client")?;
+        .context("failed to build Moonraker thumbnail HTTP client")?;
     let response = client
         .get(metadata_url.clone())
         .send()
@@ -57,23 +57,22 @@ pub(super) async fn fetch_thumbnail(
         .timeout(DOWNLOAD_TIMEOUT)
         .send()
         .await
-        .with_context(|| format!("failed to download Snapmaker thumbnail at {download_url}"))?
+        .with_context(|| format!("failed to download Moonraker thumbnail at {download_url}"))?
         .error_for_status()
         .with_context(|| {
-            format!("Snapmaker thumbnail download at {download_url} returned an error")
+            format!("Moonraker thumbnail download at {download_url} returned an error")
         })?;
     let content_type = downloaded
         .headers()
         .get(reqwest::header::CONTENT_TYPE)
         .and_then(|value| value.to_str().ok())
         .map(str::to_owned);
-    let bytes = downloaded.bytes().await.with_context(|| {
-        format!("failed to read Snapmaker thumbnail bytes from {download_url}")
-    })?;
+    let bytes = downloaded
+        .bytes()
+        .await
+        .with_context(|| format!("failed to read Moonraker thumbnail bytes from {download_url}"))?;
     if bytes.len() > MAX_THUMBNAIL_SIZE {
-        anyhow::bail!(
-            "Snapmaker thumbnail at {download_url} exceeds {MAX_THUMBNAIL_SIZE} bytes"
-        );
+        anyhow::bail!("Moonraker thumbnail at {download_url} exceeds {MAX_THUMBNAIL_SIZE} bytes");
     }
     Ok(ThumbnailStatus::Ready(ThumbnailImage {
         content_type: image_content_type(content_type.as_deref(), &bytes),
@@ -81,18 +80,18 @@ pub(super) async fn fetch_thumbnail(
     }))
 }
 
-fn metadata_url(endpoint: &SnapmakerEndpoint, filename: &str) -> Result<Url> {
+fn metadata_url(endpoint: &MoonrakerEndpoint, filename: &str) -> Result<Url> {
     let mut url = base_url(endpoint, "server/files/metadata")?;
     url.query_pairs_mut().append_pair("filename", filename);
     Ok(url)
 }
 
-fn thumbnail_url(endpoint: &SnapmakerEndpoint, relative_path: &str) -> Result<Url> {
+fn thumbnail_url(endpoint: &MoonrakerEndpoint, relative_path: &str) -> Result<Url> {
     let mut url = base_url(endpoint, "server/files/gcodes")?;
     {
         let mut segments = url
             .path_segments_mut()
-            .map_err(|_| anyhow::anyhow!("Snapmaker URL cannot accept path segments"))?;
+            .map_err(|_| anyhow::anyhow!("Moonraker URL cannot accept path segments"))?;
         for segment in relative_path.split('/').filter(|s| !s.is_empty()) {
             segments.push(segment);
         }
@@ -100,13 +99,13 @@ fn thumbnail_url(endpoint: &SnapmakerEndpoint, relative_path: &str) -> Result<Ur
     Ok(url)
 }
 
-fn base_url(endpoint: &SnapmakerEndpoint, path: &str) -> Result<Url> {
+fn base_url(endpoint: &MoonrakerEndpoint, path: &str) -> Result<Url> {
     Url::parse(&format!(
         "http://{host}:{port}/{path}",
         host = endpoint.host,
         port = endpoint.port,
     ))
-    .with_context(|| format!("invalid Snapmaker base URL for `{}`", endpoint.host))
+    .with_context(|| format!("invalid Moonraker base URL for `{}`", endpoint.host))
 }
 
 fn pick_thumbnail(thumbnails: &[Thumbnail]) -> Option<&Thumbnail> {
@@ -139,10 +138,10 @@ struct Thumbnail {
 #[cfg(test)]
 mod tests {
     use super::{pick_thumbnail, thumbnail_url, Thumbnail};
-    use crate::snapmaker::SnapmakerEndpoint;
+    use crate::moonraker::MoonrakerEndpoint;
 
-    fn endpoint() -> SnapmakerEndpoint {
-        SnapmakerEndpoint::new("192.168.0.120", 80)
+    fn endpoint() -> MoonrakerEndpoint {
+        MoonrakerEndpoint::new("192.168.0.120", 80)
     }
 
     fn thumb(width: u32, height: u32, path: &str) -> Thumbnail {

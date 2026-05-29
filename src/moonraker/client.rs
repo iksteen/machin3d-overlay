@@ -18,7 +18,7 @@ use tokio_tungstenite::{
 };
 use tracing::debug;
 
-use super::SnapmakerEndpoint;
+use super::MoonrakerEndpoint;
 
 const SUBSCRIBE_OBJECTS: &[&str] = &[
     "print_stats",
@@ -44,7 +44,7 @@ pub(super) struct MoonrakerSession {
 }
 
 impl MoonrakerSession {
-    pub(super) async fn connect(endpoint: &SnapmakerEndpoint) -> Result<Self> {
+    pub(super) async fn connect(endpoint: &MoonrakerEndpoint) -> Result<Self> {
         let url = format!("ws://{}:{}/websocket", endpoint.host, endpoint.port);
         let request = url
             .as_str()
@@ -181,11 +181,7 @@ pub(super) fn get_f64(status: &Map<String, Value>, object: &str, field: &str) ->
 /// Read a nested field from `print_stats.info.<field>` (a sub-object that Moonraker
 /// uses for layer counts).
 pub(super) fn get_print_info_i64(status: &Map<String, Value>, field: &str) -> Option<i64> {
-    status
-        .get("print_stats")?
-        .get("info")?
-        .get(field)?
-        .as_i64()
+    status.get("print_stats")?.get("info")?.get(field)?.as_i64()
 }
 
 /// Collect each `extruder`, `extruder1`, ..., `extruderN` object that the printer

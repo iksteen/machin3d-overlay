@@ -1,6 +1,6 @@
 //! Persisted credential files: state-directory resolution + atomic write.
 //!
-//! Both `bambu::auth` (Bambu Cloud token) and `snapmaker::auth`
+//! Both `bambu::auth` (Bambu Cloud token) and `moonraker::auth`
 //! (Snapmaker mTLS pairing material) live as JSON under
 //! `$XDG_STATE_HOME/machin3d-overlay/` and need the same durability +
 //! permission story: write to a temp file under the same directory, sync

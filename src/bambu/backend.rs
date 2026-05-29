@@ -3,7 +3,7 @@
 //! device.
 //!
 //! Iterates the registry via [`DeviceRegistry::bambu_entries`] so
-//! Snapmaker entries are never handed to a Bambu MQTT supervisor.
+//! Moonraker entries are never handed to a Bambu MQTT supervisor.
 
 use anyhow::Result;
 

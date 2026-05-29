@@ -13,12 +13,12 @@ use crate::{
     },
     endpoint::{Endpoint, MqttEndpoint},
     monitor::{monitor_mqtt, MonitorConfig},
+    moonraker::{
+        default_snap_token_path, fresh_clientid, load_snap_tokens, pair, upsert_snap_token,
+        MoonrakerDeviceConfig, PairConfig,
+    },
     secret::Secret,
     server::{serve, ServerConfig, DEFAULT_HOST, DEFAULT_PORT},
-    snapmaker::{
-        default_snap_token_path, fresh_clientid, load_snap_tokens, pair, upsert_snap_token,
-        PairConfig, SnapmakerDeviceConfig,
-    },
     video::VideoEndpoint,
 };
 
@@ -134,7 +134,7 @@ struct ServeArgs {
         help = "Snapmaker printer reachable over Moonraker; repeat for multiple printers. Port defaults to 80. Startup probes machine/system_info to discover the serial number used as the device id",
         help_heading = "Snapmaker"
     )]
-    snapmaker_devices: Vec<SnapmakerDeviceConfig>,
+    moonraker_devices: Vec<MoonrakerDeviceConfig>,
     #[arg(
         long = "snap-token-file",
         value_name = "PATH",
@@ -447,7 +447,7 @@ impl From<&ServeArgs> for ServerConfig {
             local_devices: args.devices.local_devices.clone(),
             cloud_devices: args.devices.cloud_devices.clone(),
             video_endpoints: args.video_devices.clone(),
-            snapmaker_devices: args.snapmaker_devices.clone(),
+            moonraker_devices: args.moonraker_devices.clone(),
             snap_token_file: Some(args.snap_token_file.clone()),
         }
     }

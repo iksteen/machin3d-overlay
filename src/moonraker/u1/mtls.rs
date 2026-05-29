@@ -1,7 +1,7 @@
 //! Build a rumqttc [`Transport`] from per-printer mTLS material.
 //!
 //! Mirrors the role of `device_tls` for Bambu, but the trust anchor is
-//! the printer-issued CA from a paired [`crate::snapmaker::SnapToken`]
+//! the printer-issued CA from a paired [`crate::moonraker::SnapToken`]
 //! (not a hard-coded vendor CA). Hostname verification is disabled
 //! because the printer's TLS cert is keyed to its SN, not the LAN host
 //! or IP we connect to.

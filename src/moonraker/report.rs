@@ -5,7 +5,7 @@ use serde_json::{Map, Value};
 
 use crate::live::{Material, PrinterReport};
 
-use super::moonraker::{extruders, get_f64, get_print_info_i64, get_string};
+use super::client::{extruders, get_f64, get_print_info_i64, get_string};
 
 pub(super) fn to_live(status: &Map<String, Value>) -> PrinterReport {
     let filename = get_string(status, "print_stats", "filename")
@@ -19,7 +19,8 @@ pub(super) fn to_live(status: &Map<String, Value>) -> PrinterReport {
     let active_index = active_tool_index(status);
     let toolhead_temperature = toolhead_temperature(status, active_index);
     let bed_temperature = get_f64(status, "heater_bed", "temperature");
-    let fan_speed = get_f64(status, "fan", "speed").map(|fraction| (fraction * 100.0).clamp(0.0, 100.0));
+    let fan_speed =
+        get_f64(status, "fan", "speed").map(|fraction| (fraction * 100.0).clamp(0.0, 100.0));
     let print_speed = get_f64(status, "gcode_move", "speed_factor")
         .map(|factor| format!("{}%", (factor * 100.0).round() as i64));
 
@@ -168,7 +169,9 @@ mod tests {
     use super::to_live;
 
     fn status(value: Value) -> Map<String, Value> {
-        let Value::Object(map) = value else { panic!("status must be object") };
+        let Value::Object(map) = value else {
+            panic!("status must be object")
+        };
         map
     }
 

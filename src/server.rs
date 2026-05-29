@@ -11,8 +11,8 @@ use crate::{
     devices::{resolve_devices, resolve_video_endpoints},
     endpoint::{Endpoint, MqttEndpoint},
     live::LiveStateStore,
+    moonraker::{self, MoonrakerDeviceConfig},
     service::{wait_for_process_shutdown_signal, ServiceTasks, Shutdown},
-    snapmaker::{self, SnapmakerDeviceConfig},
     thumbnail::ThumbnailService,
     video::{self, VideoEndpoint, VideoStreams, VideoWorkerEvents},
     web::{serve_http, AppState},
@@ -29,7 +29,7 @@ pub(crate) struct ServerConfig {
     pub local_devices: Vec<BambuLocalEndpointConfig>,
     pub cloud_devices: Vec<String>,
     pub video_endpoints: Vec<VideoEndpoint>,
-    pub snapmaker_devices: Vec<SnapmakerDeviceConfig>,
+    pub moonraker_devices: Vec<MoonrakerDeviceConfig>,
     pub snap_token_file: Option<PathBuf>,
 }
 
@@ -41,7 +41,7 @@ impl Default for ServerConfig {
             local_devices: Vec::new(),
             cloud_devices: Vec::new(),
             video_endpoints: Vec::new(),
-            snapmaker_devices: Vec::new(),
+            moonraker_devices: Vec::new(),
             snap_token_file: None,
         }
     }
@@ -100,7 +100,7 @@ impl ServiceGraph {
             &config.cloud_devices,
             &config.local_devices,
             &config.video_endpoints,
-            &config.snapmaker_devices,
+            &config.moonraker_devices,
             config.snap_token_file.as_deref(),
         )
         .await?;
@@ -127,7 +127,7 @@ impl ServiceGraph {
             &mut tasks,
             &shutdown,
         )?;
-        snapmaker::backend::spawn(live, &registry, &mut tasks, &shutdown);
+        moonraker::backend::spawn(live, &registry, &mut tasks, &shutdown);
         spawn_shared_workers(video, video_worker_events, thumbnail, &mut tasks, &shutdown);
 
         Ok(Self {

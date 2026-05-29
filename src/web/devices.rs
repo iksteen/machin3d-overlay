@@ -64,13 +64,13 @@ fn known_devices_payload(
 
 /// Whether the device's live data ultimately comes from the Bambu cloud
 /// MQTT broker (`"cloud"`) or from a printer-local MQTT broker
-/// (`"local"`). Snapmaker devices are always local; Bambu devices are
+/// (`"local"`). Moonraker devices are always local; Bambu devices are
 /// local when a `--bbl-local-device` was configured for them.
 fn device_source_label(entry: &DeviceEntry) -> &'static str {
     match entry.capabilities() {
         DeviceCapabilities::Bambu(bambu) if bambu.local_mqtt.is_some() => "local",
         DeviceCapabilities::Bambu(_) => "cloud",
-        DeviceCapabilities::Snapmaker(_) => "local",
+        DeviceCapabilities::Moonraker(_) => "local",
     }
 }
 

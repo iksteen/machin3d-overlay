@@ -20,7 +20,7 @@ use super::{
     bambu_cloud, bambu_local, error_chain,
     job_state::{FetchContext, TaskKey},
     jobs::{JobCompletion, JobOrder, JobStart, ThumbnailJob, ThumbnailJobs},
-    snapmaker, ThumbnailStatus,
+    moonraker, ThumbnailStatus,
 };
 
 async fn fetch_thumbnail(
@@ -45,8 +45,8 @@ async fn fetch_thumbnail(
             }
             anyhow::bail!("device `{device_id}` has no Bambu thumbnail data source")
         }
-        FetchContext::Snapmaker { endpoint, filename } => {
-            snapmaker::fetch_thumbnail(endpoint, filename).await
+        FetchContext::Moonraker { endpoint, filename } => {
+            moonraker::fetch_thumbnail(endpoint, filename).await
         }
     }
 }
@@ -154,8 +154,8 @@ impl ThumbnailService {
                     )
                     .await
                 }
-                DeviceCapabilities::Snapmaker(snap) => {
-                    self.refresh_snapmaker_device(
+                DeviceCapabilities::Moonraker(snap) => {
+                    self.refresh_moonraker_device(
                         device_id,
                         &snap.endpoint,
                         live_snapshot.devices.get(device_id),
@@ -185,9 +185,9 @@ impl ThumbnailService {
                 self.refresh_bambu_device(device_id, mqtt_snapshot.devices.get(device_id), order)
                     .await
             }
-            DeviceCapabilities::Snapmaker(snap) => {
+            DeviceCapabilities::Moonraker(snap) => {
                 let live_snapshot = self.inner.live.snapshot().await;
-                self.refresh_snapmaker_device(
+                self.refresh_moonraker_device(
                     device_id,
                     &snap.endpoint,
                     live_snapshot.devices.get(device_id),
@@ -221,10 +221,10 @@ impl ThumbnailService {
         .await
     }
 
-    async fn refresh_snapmaker_device(
+    async fn refresh_moonraker_device(
         &self,
         device_id: &str,
-        endpoint: &crate::snapmaker::SnapmakerEndpoint,
+        endpoint: &crate::moonraker::MoonrakerEndpoint,
         state: Option<&crate::live::DeviceLiveState>,
         order: JobOrder,
     ) -> Result<()> {
@@ -242,13 +242,13 @@ impl ThumbnailService {
             self.inner.jobs.clear(device_id, order).await;
             return Ok(());
         };
-        let Some(task) = TaskKey::from_snapmaker_filename(filename) else {
+        let Some(task) = TaskKey::from_moonraker_filename(filename) else {
             self.inner.jobs.clear(device_id, order).await;
             return Ok(());
         };
         self.schedule_fetch(
             device_id,
-            FetchContext::Snapmaker {
+            FetchContext::Moonraker {
                 endpoint: endpoint.clone(),
                 filename: filename.to_owned(),
             },

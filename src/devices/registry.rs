@@ -21,8 +21,8 @@ use std::collections::{HashMap, HashSet};
 use crate::{
     bambu::{local::BambuLocalDevice, printer_status_to_live, BambuCloudDevice},
     live::PrinterReport,
+    moonraker::{MoonrakerDevice, MoonrakerEndpoint, SnapMqttCreds},
     secret::Secret,
-    snapmaker::{SnapMqttCreds, SnapmakerDevice, SnapmakerEndpoint},
     video::VideoEndpoint,
 };
 use tracing::warn;
@@ -54,7 +54,7 @@ impl KnownDevice {
         }
     }
 
-    pub(crate) fn from_snapmaker(device: &SnapmakerDevice) -> Self {
+    pub(crate) fn from_moonraker(device: &MoonrakerDevice) -> Self {
         Self {
             id: device.serial.clone(),
             name: device.name.clone(),
@@ -71,7 +71,7 @@ impl KnownDevice {
 #[derive(Debug, Clone)]
 pub(crate) enum DeviceCapabilities {
     Bambu(BambuCapabilities),
-    Snapmaker(SnapmakerCapabilities),
+    Moonraker(MoonrakerCapabilities),
 }
 
 #[derive(Debug, Clone)]
@@ -92,11 +92,11 @@ pub(crate) struct BambuCapabilities {
 }
 
 #[derive(Debug, Clone)]
-pub(crate) struct SnapmakerCapabilities {
-    /// Moonraker HTTP/WS endpoint. Required for every Snapmaker entry —
+pub(crate) struct MoonrakerCapabilities {
+    /// Moonraker HTTP/WS endpoint. Required for every Moonraker entry —
     /// startup resolution probes this to learn the SN that becomes the
     /// device ID.
-    pub(crate) endpoint: SnapmakerEndpoint,
+    pub(crate) endpoint: MoonrakerEndpoint,
     /// Per-printer mTLS material from a paired `snap-pair` token. When
     /// `None`, the camera worker can still poll the JPEG but cannot wake
     /// the daemon on its own.
@@ -162,10 +162,10 @@ impl DeviceEntry {
         }
     }
 
-    fn from_snapmaker(device: SnapmakerDevice) -> Self {
+    fn from_moonraker(device: MoonrakerDevice) -> Self {
         Self {
-            device: KnownDevice::from_snapmaker(&device),
-            capabilities: DeviceCapabilities::Snapmaker(SnapmakerCapabilities {
+            device: KnownDevice::from_moonraker(&device),
+            capabilities: DeviceCapabilities::Moonraker(MoonrakerCapabilities {
                 endpoint: device.endpoint,
                 mtls: device.mtls,
             }),
@@ -191,13 +191,13 @@ impl DeviceEntry {
     pub(crate) fn bambu(&self) -> Option<&BambuCapabilities> {
         match &self.capabilities {
             DeviceCapabilities::Bambu(bambu) => Some(bambu),
-            DeviceCapabilities::Snapmaker(_) => None,
+            DeviceCapabilities::Moonraker(_) => None,
         }
     }
 
-    pub(crate) fn snapmaker(&self) -> Option<&SnapmakerCapabilities> {
+    pub(crate) fn moonraker(&self) -> Option<&MoonrakerCapabilities> {
         match &self.capabilities {
-            DeviceCapabilities::Snapmaker(snap) => Some(snap),
+            DeviceCapabilities::Moonraker(snap) => Some(snap),
             DeviceCapabilities::Bambu(_) => None,
         }
     }
@@ -205,7 +205,7 @@ impl DeviceEntry {
     pub(super) fn bambu_mut(&mut self) -> Option<&mut BambuCapabilities> {
         match &mut self.capabilities {
             DeviceCapabilities::Bambu(bambu) => Some(bambu),
-            DeviceCapabilities::Snapmaker(_) => None,
+            DeviceCapabilities::Moonraker(_) => None,
         }
     }
 }
@@ -262,13 +262,13 @@ impl DeviceRegistry {
             .filter_map(|entry| entry.bambu().map(|bambu| (entry, bambu)))
     }
 
-    /// All Snapmaker entries paired with their typed capabilities.
-    pub(crate) fn snapmaker_entries(
+    /// All Moonraker entries paired with their typed capabilities.
+    pub(crate) fn moonraker_entries(
         &self,
-    ) -> impl Iterator<Item = (&DeviceEntry, &SnapmakerCapabilities)> {
+    ) -> impl Iterator<Item = (&DeviceEntry, &MoonrakerCapabilities)> {
         self.entries
             .iter()
-            .filter_map(|entry| entry.snapmaker().map(|snap| (entry, snap)))
+            .filter_map(|entry| entry.moonraker().map(|snap| (entry, snap)))
     }
 
     pub(crate) fn local_devices(&self) -> Vec<BambuLocalDevice> {
@@ -282,7 +282,7 @@ impl DeviceRegistryBuilder {
     pub(crate) fn new(
         cloud_devices: Vec<BambuCloudDevice>,
         local_devices: Vec<BambuLocalDevice>,
-        snapmaker_devices: Vec<SnapmakerDevice>,
+        moonraker_devices: Vec<MoonrakerDevice>,
     ) -> Self {
         let local_ids = local_devices
             .iter()
@@ -308,8 +308,8 @@ impl DeviceRegistryBuilder {
         for local in local_devices {
             builder.push(DeviceEntry::from_local(local));
         }
-        for snapmaker in snapmaker_devices {
-            builder.push(DeviceEntry::from_snapmaker(snapmaker));
+        for moonraker in moonraker_devices {
+            builder.push(DeviceEntry::from_moonraker(moonraker));
         }
 
         builder
