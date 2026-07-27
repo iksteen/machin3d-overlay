@@ -258,6 +258,7 @@ fn local_file_candidates(filename: &str) -> Vec<String> {
         push_unique(&mut candidates, format!("/{relative}"));
     } else {
         push_unique(&mut candidates, format!("/cache/{relative}"));
+        push_unique(&mut candidates, format!("/{relative}"));
         push_unique(&mut candidates, format!("/model/{relative}"));
     }
     candidates
@@ -320,7 +321,7 @@ mod tests {
     fn local_file_candidates_try_cache_then_model() {
         assert_eq!(
             local_file_candidates("cube.3mf"),
-            vec!["/cache/cube.3mf", "/model/cube.3mf"]
+            vec!["/cache/cube.3mf", "/cube.3mf", "/model/cube.3mf"]
         );
         assert_eq!(
             local_file_candidates("/model/cube.3mf"),
