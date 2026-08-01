@@ -103,6 +103,7 @@
     const el = document.createElement("div");
     el.className = "spool";
     el.classList.toggle("is-active", material.active === true);
+    el.classList.toggle("is-ext", material.label === "ext");
 
     const roll = document.createElement("div");
     roll.className = "spool-roll";
