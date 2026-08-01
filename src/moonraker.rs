@@ -17,6 +17,7 @@ pub(crate) mod backend;
 mod client;
 mod config;
 mod device;
+pub(crate) mod metadata;
 mod probe;
 mod report;
 pub(crate) mod u1;
