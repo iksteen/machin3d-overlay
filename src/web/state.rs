@@ -52,8 +52,11 @@ impl AppState {
 
     pub(super) async fn current_print_payload(&self) -> Result<CurrentPrintPayload> {
         let snapshot = self.live.snapshot().await;
-        let devices =
-            summarize_devices(self.devices.devices(), &snapshot.devices, &snapshot.connections);
+        let devices = summarize_devices(
+            self.devices.devices(),
+            &snapshot.devices,
+            &snapshot.connections,
+        );
         Ok(CurrentPrintPayload::success(snapshot.status, devices))
     }
 

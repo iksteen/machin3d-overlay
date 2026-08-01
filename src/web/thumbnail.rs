@@ -28,10 +28,7 @@ async fn thumbnail_response(state: AppState, device_id: Option<String>) -> Respo
         None => None,
     };
 
-    match state
-        .thumbnail_status(selected_device_id.as_deref())
-        .await
-    {
+    match state.thumbnail_status(selected_device_id.as_deref()).await {
         Ok(ThumbnailStatus::Ready(image)) => {
             let content_type = HeaderValue::from_str(&image.content_type)
                 .unwrap_or_else(|_| HeaderValue::from_static("application/octet-stream"));

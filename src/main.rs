@@ -1,6 +1,6 @@
 use anyhow::Result;
-use machin3d_overlay::cli;
 use clap::Parser;
+use machin3d_overlay::cli;
 use tracing_subscriber::{fmt, EnvFilter};
 
 #[tokio::main]
