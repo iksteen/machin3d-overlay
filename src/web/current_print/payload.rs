@@ -190,22 +190,20 @@ fn round_progress(value: f64) -> f64 {
     (value * 10.0).round() / 10.0
 }
 
+/// Hours and minutes only. Neither a print-time estimate nor a remaining time
+/// is accurate to the second, and a seconds field rewrites itself on every
+/// update for no information gain. Anything under a minute reads `<1m` rather
+/// than a bare `0m`.
 fn format_seconds(seconds: f64) -> String {
-    let total_seconds = seconds as i64;
-    let hours = total_seconds / 3600;
-    let minutes = (total_seconds % 3600) / 60;
-    let remaining_seconds = total_seconds % 60;
-    let mut parts = Vec::new();
-    if hours > 0 {
-        parts.push(format!("{hours}h"));
+    let total_minutes = (seconds as i64) / 60;
+    let hours = total_minutes / 60;
+    let minutes = total_minutes % 60;
+    match (hours, minutes) {
+        (0, 0) => "<1m".to_owned(),
+        (0, minutes) => format!("{minutes}m"),
+        (hours, 0) => format!("{hours}h"),
+        (hours, minutes) => format!("{hours}h {minutes}m"),
     }
-    if minutes > 0 {
-        parts.push(format!("{minutes}m"));
-    }
-    if remaining_seconds > 0 || parts.is_empty() {
-        parts.push(format!("{remaining_seconds}s"));
-    }
-    parts.join(" ")
 }
 
 fn format_weight(value: &str) -> Option<String> {
@@ -232,6 +230,15 @@ mod tests {
     };
 
     use super::CurrentPrintPayload;
+
+    #[test]
+    fn durations_render_as_hours_and_minutes() {
+        assert_eq!(super::format_seconds(0.0), "<1m");
+        assert_eq!(super::format_seconds(45.0), "<1m");
+        assert_eq!(super::format_seconds(90.0), "1m");
+        assert_eq!(super::format_seconds(3600.0), "1h");
+        assert_eq!(super::format_seconds(34916.0), "9h 41m");
+    }
 
     #[test]
     fn device_payload_formats_web_payload_fields() {
@@ -284,7 +291,8 @@ mod tests {
         assert_eq!(device.progress, Some(25.0));
         assert_eq!(device.total_print_time.as_deref(), Some("1h"));
         assert_eq!(device.weight.as_deref(), Some("1.2kg"));
-        assert_eq!(device.time_remaining.as_deref(), Some("1m 30s"));
+        // 90s of remaining time renders as whole minutes, seconds dropped.
+        assert_eq!(device.time_remaining.as_deref(), Some("1m"));
         assert_eq!(device.toolhead_temp.as_deref(), Some("220C"));
         assert_eq!(device.bed_temp.as_deref(), Some("60C"));
         assert_eq!(device.fan_speed.as_deref(), Some("100%"));
