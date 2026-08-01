@@ -139,7 +139,7 @@ struct ServeArgs {
         long = "snap-token-file",
         value_name = "PATH",
         default_value_os_t = default_snap_token_path().to_path_buf(),
-        help = "Snapmaker pairing token JSON path. Loaded at startup to enable reliable camera wake-up over mTLS; HOST in --snap-device must match the host passed to `snap-pair`",
+        help = "Snapmaker pairing token JSON path. Optional: without a token the camera is woken over Moonraker's unauthenticated LAN WebSocket instead. HOST in --snap-device must match the host passed to `snap-pair`",
         help_heading = "Snapmaker"
     )]
     snap_token_file: PathBuf,

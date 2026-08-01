@@ -9,8 +9,10 @@
 //! Moonraker/Klipper printer, not only Snapmaker.
 //!
 //! The Snapmaker U1 is one such printer with a single wrinkle — its camera
-//! daemon only streams while a bespoke mTLS-MQTT control plane has woken it.
-//! That quirk is quarantined under [`u1`]; everything else here is vendor
+//! daemon only captures while something keeps monitor mode armed, either over
+//! a bespoke mTLS-MQTT control plane or over Moonraker's own `camera.*`
+//! repeater. The pairing half of that quirk is quarantined under [`u1`], the
+//! wake itself lives in [`crate::video`]; everything else here is vendor
 //! neutral.
 
 pub(crate) mod backend;

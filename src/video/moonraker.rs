@@ -1,15 +1,14 @@
 //! Moonraker / Klipper camera worker.
 //!
 //! Polls the printer's camera JPEG and fans frames out to the shared stream.
-//! Unpaired devices serve whatever the printer returns (stale unless a print
-//! or another client keeps the daemon awake).
 //!
 //! Two things here are still Snapmaker-U1-shaped rather than fully generic:
 //! the poll URL (`CameraSession::for_endpoint`) is the U1's legacy
 //! `/server/files/camera/monitor.jpg` path rather than a generic
-//! `/server/webcams/list` lookup, and paired U1s must first be woken over an
-//! mTLS control plane ([`super::u1_camera`], which owns the wake details). The
-//! wake is invoked as a hook so the poll loop itself stays vendor-neutral.
+//! `/server/webcams/list` lookup, and the U1's camera daemon must be armed —
+//! and re-armed inside its ~6 minute watchdog — before it captures anything
+//! ([`super::u1_camera`], which owns those details). The wake is invoked as a
+//! hook so the poll loop itself stays vendor-neutral.
 
 use std::{
     sync::{atomic::Ordering, Arc},
@@ -19,7 +18,7 @@ use std::{
 use anyhow::{Context, Result};
 use bytes::Bytes;
 use reqwest::header::{IF_MODIFIED_SINCE, LAST_MODIFIED};
-use tokio::time::sleep;
+use tokio::time::{sleep, Instant};
 use tracing::warn;
 
 use crate::{errors::error_chain, moonraker::MoonrakerEndpoint, service::ShutdownReceiver};
@@ -49,14 +48,24 @@ pub(super) async fn run_moonraker_stream_worker(
     };
 
     let session = CameraSession::for_endpoint(&source.endpoint);
-    // Snapmaker U1: wake the camera daemon over mTLS before polling. Returns
-    // `None` (and is a no-op) for a plain Moonraker printer or an unpaired U1.
-    let publisher = u1_camera::wake_camera(source, &session.poll_url).await;
+    // Snapmaker U1: the camera daemon captures only while monitor mode is
+    // armed, and disarms itself ~6 minutes after the last request — so wake it
+    // before the first poll and re-arm every heartbeat. A plain Moonraker
+    // printer just logs the rejected method and streams (or doesn't) on its own.
+    let camera = u1_camera::open_control(source).await;
+    let mut next_wake = Instant::now();
 
     let mut delay = RETRY_INITIAL_DELAY;
     let mut last_modified: Option<String> = None;
 
     while stream.clients.load(Ordering::SeqCst) > 0 {
+        if Instant::now() >= next_wake {
+            tokio::select! {
+                _ = camera.start_monitor(source) => {}
+                _ = shutdown.cancelled() => break,
+            }
+            next_wake = Instant::now() + u1_camera::HEARTBEAT;
+        }
         let attempt = tokio::select! {
             result = poll_once(&client, &session, last_modified.as_deref()) => result,
             _ = shutdown.cancelled() => break,
@@ -93,9 +102,7 @@ pub(super) async fn run_moonraker_stream_worker(
         }
     }
 
-    if let Some(publisher) = publisher {
-        publisher.stop_and_shutdown(&stream.device_id).await;
-    }
+    camera.stop(source).await;
 }
 
 /// What the camera daemon told us when monitor mode started. We only use

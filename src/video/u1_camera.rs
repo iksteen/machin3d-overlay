@@ -2,12 +2,25 @@
 //!
 //! The U1's camera daemon only writes fresh frames to
 //! `/server/files/camera/monitor.jpg` while "monitor" mode is active; by
-//! default the file is frozen on the last captured frame. This module opens
-//! the printer's bespoke per-printer mTLS MQTT control plane and publishes
-//! `camera.start_monitor` / `camera.stop_monitor` to wake and release the
-//! daemon. It is the one Snapmaker-specific bolt-on of the Moonraker video
-//! path; a plain Moonraker/Klipper printer never constructs it (see
-//! [`super::moonraker`]).
+//! default the file is frozen on the last captured frame, and the daemon's
+//! watchdog ends capture ~361 s after the last `camera.start_monitor` (it
+//! starts counting down at ~311 s), so monitor mode has to be re-armed on
+//! [`HEARTBEAT`] for as long as anyone is watching.
+//!
+//! There are two ways to reach the daemon, both verified against firmware
+//! 1.5.2.12:
+//!
+//! - the printer's bespoke per-printer **mTLS MQTT** control plane, from
+//!   `snap-pair` material ([`SnapMqttPublisher`]) — works from anywhere that
+//!   can reach the broker, and returns the daemon's own reply;
+//! - Moonraker's **`camera.*` JSON-RPC repeater** over its WebSocket
+//!   ([`repeater`]) — no certificate and no API key, because the U1 ships with
+//!   the private-address ranges in `trusted_clients`, but only from such a
+//!   trusted client IP.
+//!
+//! Paired devices use the credentialed path; everything else falls back to the
+//! repeater. This is the one Snapmaker-specific bolt-on of the Moonraker video
+//! path (see [`super::moonraker`]).
 
 use std::{
     collections::HashMap,
@@ -29,6 +42,10 @@ use crate::{
 
 use super::source::MoonrakerVideoSource;
 
+/// How often the caller must re-arm monitor mode. Comfortably inside the
+/// daemon's ~361 s watchdog; each `start_monitor` resets it.
+pub(super) const HEARTBEAT: Duration = Duration::from_secs(120);
+
 /// The `domain` parameter the camera daemon recognizes for LAN-side
 /// monitor mode. Observed value Orca sends (and the daemon accepts) is
 /// the literal string `"lan"` — arbitrary client identifiers are rejected
@@ -45,19 +62,24 @@ const MQTT_RESPONSE_BUDGET: Duration = Duration::from_secs(10);
 /// parent shutdown grace period (5s by default).
 const STOP_MONITOR_BUDGET: Duration = Duration::from_secs(3);
 
-/// If this device carries U1 mTLS pairing material, open the control-plane
-/// session and start monitor mode so the camera daemon emits fresh frames.
-/// Returns the live publisher (held for the worker's lifetime, then released
-/// via [`SnapMqttPublisher::stop_and_shutdown`]) or `None` for a plain
-/// Moonraker printer, an unpaired U1, or when the wake fails. `poll_url` is
-/// only used for diagnostics — it is the URL the caller will poll once the
-/// daemon is awake.
-pub(super) async fn wake_camera(
-    source: &MoonrakerVideoSource,
-    poll_url: &str,
-) -> Option<SnapMqttPublisher> {
-    let creds = source.mtls.as_ref()?;
-    let publisher = match SnapMqttPublisher::connect(source, creds).await {
+/// The transport this device's camera daemon is driven over, held for the
+/// worker's lifetime and released via [`CameraControl::stop`].
+pub(super) enum CameraControl {
+    /// Paired U1: long-lived mTLS MQTT session.
+    Mtls(SnapMqttPublisher),
+    /// Unpaired U1 on a trusted LAN address: Moonraker's camera repeater.
+    Repeater,
+}
+
+/// Open the camera control plane for this device. Prefers the paired mTLS
+/// session and falls back to the unauthenticated repeater — a printer we
+/// cannot reach over MQTT is usually still reachable over the same Moonraker
+/// WebSocket the status backend already talks to.
+pub(super) async fn open_control(source: &MoonrakerVideoSource) -> CameraControl {
+    let Some(creds) = source.mtls.as_ref() else {
+        return CameraControl::Repeater;
+    };
+    match SnapMqttPublisher::connect(source, creds).await {
         Ok(publisher) => {
             info!(
                 device_id = %source.device_id,
@@ -65,31 +87,164 @@ pub(super) async fn wake_camera(
                 port = creds.port,
                 "opened Snapmaker mTLS session for camera control"
             );
-            publisher
+            CameraControl::Mtls(publisher)
         }
         Err(error) => {
             warn!(
                 device_id = %source.device_id,
                 error = %error_chain(&error),
-                "could not open Snapmaker mTLS publisher; polling without waking the camera daemon"
+                "could not open Snapmaker mTLS publisher; falling back to the Moonraker camera repeater"
             );
-            return None;
+            CameraControl::Repeater
         }
-    };
-    if let Err(error) = publisher.start_monitor().await {
-        warn!(
-            device_id = %source.device_id,
-            error = %error_chain(&error),
-            "Snapmaker camera start_monitor failed; polling anyway in case daemon is already active"
-        );
-    } else {
-        info!(
-            device_id = %source.device_id,
-            poll_url = %poll_url,
-            "Snapmaker camera start_monitor succeeded"
-        );
     }
-    Some(publisher)
+}
+
+impl CameraControl {
+    /// Arm (or re-arm) monitor mode. Failures are logged, not returned: a
+    /// failed wake only means frames may be stale — another client may
+    /// already be keeping the daemon awake — so the caller polls regardless.
+    pub(super) async fn start_monitor(&self, source: &MoonrakerVideoSource) {
+        let outcome = match self {
+            CameraControl::Mtls(publisher) => publisher.start_monitor().await,
+            CameraControl::Repeater => repeater::start_monitor(source).await,
+        };
+        match outcome {
+            Ok(()) => debug!(device_id = %source.device_id, "Snapmaker camera monitor armed"),
+            Err(error) => warn!(
+                device_id = %source.device_id,
+                error = %error_chain(&error),
+                "Snapmaker camera start_monitor failed; polling anyway in case daemon is already active"
+            ),
+        }
+    }
+
+    /// Release the camera and tear the session down. The camera is a shared
+    /// single-camera resource (timelapse and defect detection contend for it),
+    /// so we hand it back when the last viewer leaves instead of waiting out
+    /// the watchdog.
+    pub(super) async fn stop(self, source: &MoonrakerVideoSource) {
+        match self {
+            CameraControl::Mtls(publisher) => publisher.stop_and_shutdown(&source.device_id).await,
+            CameraControl::Repeater => {
+                match timeout(STOP_MONITOR_BUDGET, repeater::stop_monitor(source)).await {
+                    Ok(Ok(())) => {
+                        debug!(device_id = %source.device_id, "Snapmaker camera monitor stopped")
+                    }
+                    Ok(Err(error)) => warn!(
+                        device_id = %source.device_id,
+                        error = %error_chain(&error),
+                        "Snapmaker camera stop_monitor failed"
+                    ),
+                    Err(_) => {
+                        warn!(device_id = %source.device_id, "Snapmaker camera stop_monitor timed out")
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// Moonraker's `camera.*` JSON-RPC repeater: it forwards the call onto the
+/// printer's internal MQTT bus on our behalf, so no client certificate is
+/// involved. Only reachable from an IP in the printer's `trusted_clients`
+/// (every private range, on stock config) and only over the WebSocket — the
+/// HTTP transport for these methods is disabled on the device.
+mod repeater {
+    use std::time::Duration;
+
+    use anyhow::{Context, Result};
+    use futures_util::{SinkExt, StreamExt};
+    use serde_json::{json, Value};
+    use tokio::time::timeout;
+    use tokio_tungstenite::{
+        connect_async,
+        tungstenite::{client::IntoClientRequest, Message},
+    };
+
+    use super::{MoonrakerVideoSource, MONITOR_DOMAIN};
+
+    /// Seconds between the captures the daemon writes to `monitor.jpg`.
+    const CAPTURE_INTERVAL: u32 = 1;
+    /// One request per socket, so a fixed id is enough to match the reply.
+    const REQUEST_ID: u64 = 1;
+    const CONNECT_BUDGET: Duration = Duration::from_secs(5);
+    /// How long we listen for an objection before declaring success. Accepted
+    /// calls are answered with *silence* — verified on firmware 1.5.2.12: a
+    /// `camera.start_monitor` that demonstrably woke the daemon drew no reply
+    /// in 20 s, while a bogus method came back `-32601` in 40 ms. So only
+    /// failures speak, and they speak immediately.
+    const OBJECTION_GRACE: Duration = Duration::from_secs(1);
+
+    pub(super) async fn start_monitor(source: &MoonrakerVideoSource) -> Result<()> {
+        let params = json!({
+            "req_id": REQUEST_ID,
+            "domain": MONITOR_DOMAIN,
+            "interval": CAPTURE_INTERVAL,
+            "expect_pw": false,
+        });
+        call(source, "camera.start_monitor", params).await
+    }
+
+    pub(super) async fn stop_monitor(source: &MoonrakerVideoSource) -> Result<()> {
+        let params = json!({ "req_id": REQUEST_ID, "domain": MONITOR_DOMAIN });
+        call(source, "camera.stop_monitor", params).await
+    }
+
+    /// The repeater is fire-and-forget: Moonraker publishes onto the printer's
+    /// MQTT bus and says nothing, while the daemon's own reply (carrying
+    /// `url`/`pw`) goes to the MQTT `camera/response` topic we cannot see from
+    /// here. That costs us nothing — the frame path is the fixed URL
+    /// `super::super::moonraker::CameraSession` builds. So we send, listen
+    /// just long enough to catch a rejection, and treat silence as success.
+    async fn call(source: &MoonrakerVideoSource, method: &str, params: Value) -> Result<()> {
+        let url = format!(
+            "ws://{}:{}/websocket",
+            source.endpoint.host, source.endpoint.port
+        );
+        let request = url
+            .as_str()
+            .into_client_request()
+            .with_context(|| format!("invalid Moonraker WebSocket URL `{url}`"))?;
+        let (mut socket, _response) = timeout(CONNECT_BUDGET, connect_async(request))
+            .await
+            .with_context(|| format!("timed out connecting to Moonraker at {url}"))?
+            .with_context(|| format!("failed to connect to Moonraker at {url}"))?;
+
+        let payload = json!({
+            "jsonrpc": "2.0",
+            "method": method,
+            "params": params,
+            "id": REQUEST_ID,
+        });
+        socket
+            .send(Message::Text(payload.to_string()))
+            .await
+            .with_context(|| format!("failed to send `{method}` to {url}"))?;
+
+        let objection = async {
+            while let Some(message) = socket.next().await {
+                let Message::Text(text) = message.context("Moonraker WS read failed")? else {
+                    continue;
+                };
+                let value: Value = serde_json::from_str(&text)
+                    .context("Moonraker WS sent a message that is not valid JSON")?;
+                // Everything else on this socket is unsolicited notification
+                // traffic (`notify_proc_stat_update` and friends).
+                if value.get("id").and_then(Value::as_u64) != Some(REQUEST_ID) {
+                    continue;
+                }
+                if let Some(error) = value.get("error") {
+                    anyhow::bail!("Moonraker returned an error for `{method}`: {error}");
+                }
+                return Ok(());
+            }
+            anyhow::bail!("Moonraker closed before acting on `{method}`")
+        };
+        let outcome = timeout(OBJECTION_GRACE, objection).await.unwrap_or(Ok(()));
+        let _ = socket.close(None).await;
+        outcome
+    }
 }
 
 /// Shape of the `result` field on a successful `camera.start_monitor`

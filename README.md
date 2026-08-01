@@ -179,8 +179,16 @@ required for Snapmaker — `serve` works without a token file when only
 
 The U1's on-device camera daemon only writes fresh frames to `monitor.jpg`
 while it is in "monitor" mode; by default the file is frozen on the last
-captured frame. To wake the daemon on demand, the overlay drives the same
-bespoke mTLS MQTT control plane Snapmaker Orca uses. Pair once:
+captured frame, and the daemon disarms itself roughly six minutes after the
+last request, so the overlay re-arms it every two minutes while a viewer is
+connected.
+
+**Pairing is optional.** From a LAN address the overlay wakes the daemon
+through Moonraker's own `camera.*` JSON-RPC repeater on
+`ws://HOST/websocket` — the U1 ships with the private address ranges in
+Moonraker's `trusted_clients`, so no certificate and no API key are needed.
+Pair only if you have narrowed `trusted_clients` (or turned on forced API-key
+auth) on the printer, or want the credentialed path Snapmaker Orca uses:
 
 ```sh
 # On the printer: switch to LAN mode (Settings → Network) so the approval popup can appear.
@@ -206,10 +214,12 @@ subsequent pairings (e.g. after rotating tokens) do not require a second tap.
 popup. Once you have a token on disk, the printer can be in cloud mode for
 normal operation and the overlay's mTLS connection still works.
 
-Without `snap-pair`, the overlay still serves `/devices/<id>/video.mjpeg` but
-does not attempt to wake the camera daemon. Frames will only update while
-something else (a print job, Orca's camera viewer) keeps the daemon active;
-otherwise you'll get the last-captured frame, frozen.
+Without `snap-pair` — or when the mTLS session cannot be opened — the overlay
+falls back to the unauthenticated repeater described above, which works from
+any client IP the printer trusts. If that is refused too (a hardened printer,
+or a plain non-Snapmaker Moonraker device), frames only update while something
+else keeps the daemon active; otherwise you get the last-captured frame,
+frozen.
 
 ## Camera streaming
 
